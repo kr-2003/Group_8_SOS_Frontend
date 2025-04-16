@@ -46,7 +46,7 @@ const Room = () => {
 
   useEffect(() => {
     const unsub = () => {
-      socketRef.current = io.connect("https://group8-sos-backend.onrender.com/");
+      socketRef.current = io.connect("http://localhost:5555/");
       navigator.mediaDevices
         .getUserMedia({
           video: true,

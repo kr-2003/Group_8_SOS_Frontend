@@ -1,6 +1,4 @@
-import React, { useEffect, useState } from "react";
-import { useRef } from "react";
-
+import React, { useEffect, useState, useRef } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 
 // icons
@@ -13,7 +11,6 @@ import { MdCallEnd as CallEndIcon } from "react-icons/md";
 import { MdClear as ClearIcon } from "react-icons/md";
 import { AiOutlineLink as LinkIcon } from "react-icons/ai";
 import { MdOutlineContentCopy as CopyToClipboardIcon } from "react-icons/md";
-// import { MdScreenShare as ScreenShareIcon } from "react-icons/md";
 import { IoVideocamSharp as VideoOnIcon } from "react-icons/io5";
 import { IoVideocamOff as VideoOffIcon } from "react-icons/io5";
 import { AiOutlineShareAlt as ShareIcon } from "react-icons/ai";
@@ -44,15 +41,14 @@ import { Camera } from "@mediapipe/camera_utils";
 
 import axios from "axios";
 
-import SpeechRecognition, { useSpeechRecognition } from 'react-speech-recognition'
-
+import SpeechRecognition, { useSpeechRecognition } from "react-speech-recognition";
 
 const Room = () => {
   const [loading, setLoading] = useState(true);
   const [localStream, setLocalStream] = useState(null);
   const navigate = useNavigate();
   const [micOn, setMicOn] = useState(true);
-  const [showChat, setshowChat] = useState(true);
+  const [showChat, setShowChat] = useState(true);
   const [share, setShare] = useState(false);
   const [joinSound] = useState(new Audio(joinSFX));
   const { roomID } = useParams();
@@ -61,18 +57,16 @@ const Room = () => {
   const [peers, setPeers] = useState([]);
   const socket = useRef();
   const peersRef = useRef([]);
-
   const [videoActive, setVideoActive] = useState(true);
-
   const [msgs, setMsgs] = useState([]);
   const [msgText, setMsgText] = useState("");
   const localVideo = useRef();
+  const mediaRecorder = useRef(null);
+  const [signLanguageText, setSignLanguageText] = useState(""); // To display processed text
 
   // user
   const { user, login } = useAuth();
-
   const [particpentsOpen, setParticpentsOpen] = useState(true);
-
   const [processedStream, setProcessedStream] = useState(null);
   const processedVideo = useRef();
 
@@ -80,9 +74,8 @@ const Room = () => {
     transcript,
     listening,
     resetTranscript,
-    browserSupportsSpeechRecognition
+    browserSupportsSpeechRecognition,
   } = useSpeechRecognition();
-
 
   const sendMessage = (e) => {
     e.preventDefault();
@@ -101,13 +94,44 @@ const Room = () => {
     setMsgText("");
   };
 
+  // Start streaming video to backend
+  const startStreamingToBackend = (stream) => {
+    mediaRecorder.current = new MediaRecorder(stream, {
+      mimeType: "video/webm;codecs=vp8",
+      videoBitsPerSecond: 1000000,
+    });
+  
+    mediaRecorder.current.ondataavailable = async (event) => {
+      if (event.data.size > 0) {
+        // Convert Blob to ArrayBuffer
+        const arrayBuffer = await event.data.arrayBuffer();
+        socket.current.emit("video-chunk", {
+          roomID,
+          userId: user.uid,
+          chunk: arrayBuffer, // Send ArrayBuffer instead of Blob
+        });
+      }
+    };
+  
+    mediaRecorder.current.onstop = () => {
+      socket.current.emit("video-stream-end", { roomID, userId: user.uid });
+    };
+  
+    mediaRecorder.current.start(100);
+  };
+
   useEffect(() => {
     const unsub = () => {
-      socket.current = io.connect("https://group8-sos-backend.onrender.com");
+      socket.current = io.connect("http://localhost:5555");
+      
+      // Receive processed sign language text from backend
+      socket.current.on("sign-language-text", (data) => {
+        setSignLanguageText(data.text);
+      });
+
       socket.current.on("message", (data) => {
         const audio = new Audio(msgSFX);
         if (user?.uid !== data.user.id) {
-          console.log("send");
           audio.play();
         }
         const msg = {
@@ -115,10 +139,9 @@ const Room = () => {
           ...data,
         };
         setMsgs((msgs) => [...msgs, msg]);
-        // setMsgs(data);
-        // console.log(data);
       });
-      if (user)
+
+      if (user) {
         navigator.mediaDevices
           .getUserMedia({
             video: true,
@@ -128,17 +151,20 @@ const Room = () => {
             setLoading(false);
             setLocalStream(stream);
             localVideo.current.srcObject = stream;
+
+            // Start streaming to backend
+            startStreamingToBackend(stream);
+
             socket.current.emit("join room", {
               roomID,
-              user: user
-                ? {
-                  uid: user?.uid,
-                  email: user?.email,
-                  name: user?.displayName,
-                  photoURL: user?.photoURL,
-                }
-                : null,
+              user: {
+                uid: user?.uid,
+                email: user?.email,
+                name: user?.displayName,
+                photoURL: user?.photoURL,
+              },
             });
+
             socket.current.on("all users", (users) => {
               const peers = [];
               users.forEach((user) => {
@@ -158,7 +184,6 @@ const Room = () => {
             });
 
             socket.current.on("user joined", (payload) => {
-              // console.log(payload);
               const peer = addPeer(payload.signal, payload.callerID, stream);
               peersRef.current.push({
                 peerID: payload.callerID,
@@ -190,8 +215,20 @@ const Room = () => {
               setPeers((users) => users.filter((p) => p.peerID !== id));
             });
           });
+      }
     };
-    return unsub();
+    unsub();
+
+    // Cleanup on unmount
+    return () => {
+      if (mediaRecorder.current && mediaRecorder.current.state !== "inactive") {
+        mediaRecorder.current.stop();
+      }
+      if (localStream) {
+        localStream.getTracks().forEach((track) => track.stop());
+      }
+      socket.current.disconnect();
+    };
   }, [user, roomID]);
 
   if (!browserSupportsSpeechRecognition) {
@@ -212,11 +249,11 @@ const Room = () => {
         signal,
         user: user
           ? {
-            uid: user?.uid,
-            email: user?.email,
-            name: user?.displayName,
-            photoURL: user?.photoURL,
-          }
+              uid: user?.uid,
+              email: user?.email,
+              name: user?.displayName,
+              photoURL: user?.photoURL,
+            }
           : null,
       });
     });
@@ -258,20 +295,15 @@ const Room = () => {
                   >
                     <motion.div
                       layout
-                      className={`grid grid-cols-1 gap-4  ${showChat ? "md:grid-cols-2" : "lg:grid-cols-3 sm:grid-cols-2"
-                        } `}
+                      className={`grid grid-cols-1 gap-4  ${showChat ? "md:grid-cols-2" : "lg:grid-cols-3 sm:grid-cols-2"} `}
                     >
                       <motion.div
                         layout
-                        className={`relative bg-lightGray rounded-lg aspect-video overflow-hidden ${pin && "md:col-span-2 md:row-span-2 md:col-start-1 md:row-start-1"
-                          }`}
+                        className={`relative bg-lightGray rounded-lg aspect-video overflow-hidden ${pin && "md:col-span-2 md:row-span-2 md:col-start-1 md:row-start-1"}`}
                       >
                         <div className="absolute top-4 right-4 z-20">
                           <button
-                            className={`${pin
-                              ? "bg-blue border-transparent"
-                              : "bg-slate-800/70 backdrop-blur border-gray"
-                              } md:border-2 border-[1px] aspect-square md:p-2.5 p-1.5 cursor-pointer md:rounded-xl rounded-lg text-white md:text-xl text-lg`}
+                            className={`${pin ? "bg-blue border-transparent" : "bg-slate-800/70 backdrop-blur border-gray"} md:border-2 border-[1px] aspect-square md:p-2.5 p-1.5 cursor-pointer md:rounded-xl rounded-lg text-white md:text-xl text-lg`}
                             onClick={() => setPin(!pin)}
                           >
                             {pin ? <PinActiveIcon /> : <PinIcon />}
@@ -295,37 +327,13 @@ const Room = () => {
                           </div>
                         )}
 
-                        <div className="absolute bottom-4 right-4">
-                          {/* <button
-                          className={`${
-                            micOn
-                              ? "bg-blue border-transparent"
-                              : "bg-slate-800/70 backdrop-blur border-gray"
-                          } border-2  p-2 cursor-pointer rounded-xl text-white text-xl`}
-                          onClick={() => {
-                            const audio =
-                              localVideo.current.srcObject.getAudioTracks()[0];
-                            if (micOn) {
-                              audio.enabled = false;
-                              setMicOn(false);
-                            }
-                            if (!micOn) {
-                              audio.enabled = true;
-                              setMicOn(true);
-                            }
-                          }}
-                        >
-                          {micOn ? <MicOnIcon /> : <MicOffIcon />}
-                        </button> */}
-                        </div>
                         <div className="absolute bottom-4 left-4">
-                          <div className="bg-slate-800/70 backdrop-blur border-gray border-2  py-1 px-3 cursor-pointer rounded-md text-white text-xs">
+                          <div className="bg-slate-800/70 backdrop-blur border-gray border-2 py-1 px-3 cursor-pointer rounded-md text-white text-xs">
                             {user?.displayName}
                           </div>
                         </div>
                       </motion.div>
                       {peers.map((peer) => (
-                        // console.log(peer),
                         <MeetGridCard key={peer?.peerID} user={peer.user} peer={peer?.peer} />
                       ))}
                     </motion.div>
@@ -335,17 +343,13 @@ const Room = () => {
                       <div className="flex gap-2">
                         <div>
                           <button
-                            className={`${micOn
-                              ? "bg-blue border-transparent"
-                              : "bg-slate-800/70 backdrop-blur border-gray"
-                              } border-2  p-2 cursor-pointer rounded-xl text-white text-xl`}
+                            className={`${micOn ? "bg-blue border-transparent" : "bg-slate-800/70 backdrop-blur border-gray"} border-2 p-2 cursor-pointer rounded-xl text-white text-xl`}
                             onClick={() => {
                               const audio = localVideo.current.srcObject.getAudioTracks()[0];
                               if (micOn) {
                                 audio.enabled = false;
                                 setMicOn(false);
-                              }
-                              if (!micOn) {
+                              } else {
                                 audio.enabled = true;
                                 setMicOn(true);
                               }
@@ -357,14 +361,9 @@ const Room = () => {
 
                         <div>
                           <button
-                            className={`${videoActive
-                              ? "bg-blue border-transparent"
-                              : "bg-slate-800/70 backdrop-blur border-gray"
-                              } border-2  p-2 cursor-pointer rounded-xl text-white text-xl`}
+                            className={`${videoActive ? "bg-blue border-transparent" : "bg-slate-800/70 backdrop-blur border-gray"} border-2 p-2 cursor-pointer rounded-xl text-white text-xl`}
                             onClick={() => {
-                              const videoTrack = localStream
-                                .getTracks()
-                                .find((track) => track.kind === "video");
+                              const videoTrack = localStream.getTracks().find((track) => track.kind === "video");
                               if (videoActive) {
                                 videoTrack.enabled = false;
                               } else {
@@ -376,14 +375,6 @@ const Room = () => {
                             {videoActive ? <VideoOnIcon /> : <VideoOffIcon />}
                           </button>
                         </div>
-                        {/* <div>
-                          <button
-                            className={`bg-blue border-transparent
-           border-2  p-2 cursor-pointer rounded-xl text-white text-xl`}
-                          >
-                            <UsersIcon />
-                          </button>
-                        </div> */}
                       </div>
                       <div className="flex-grow flex justify-center">
                         <button
@@ -398,18 +389,9 @@ const Room = () => {
                         </button>
                       </div>
                       <div className="flex gap-2">
-                        {/* <div>
-                          <button
-                            className={`bg-slate-800/70 backdrop-blur border-gray
-          border-2  p-2 cursor-pointer rounded-xl text-white text-xl`}
-                          >
-                            <ScreenShareIcon size={22} />
-                          </button>
-                        </div> */}
                         <div>
                           <button
-                            className={`bg-slate-800/70 backdrop-blur border-gray
-          border-2  p-2 cursor-pointer rounded-xl text-white text-xl`}
+                            className={`bg-slate-800/70 backdrop-blur border-gray border-2 p-2 cursor-pointer rounded-xl text-white text-xl`}
                             onClick={() => setShare(true)}
                           >
                             <ShareIcon size={22} />
@@ -417,13 +399,8 @@ const Room = () => {
                         </div>
                         <div>
                           <button
-                            className={`${showChat
-                              ? "bg-blue border-transparent"
-                              : "bg-slate-800/70 backdrop-blur border-gray"
-                              } border-2  p-2 cursor-pointer rounded-xl text-white text-xl`}
-                            onClick={() => {
-                              setshowChat(!showChat);
-                            }}
+                            className={`${showChat ? "bg-blue border-transparent" : "bg-slate-800/70 backdrop-blur border-gray"} border-2 p-2 cursor-pointer rounded-xl text-white text-xl`}
+                            onClick={() => setShowChat(!showChat)}
                           >
                             <ChatIcon />
                           </button>
@@ -432,11 +409,14 @@ const Room = () => {
                     </div>
                   </div>
                 </motion.div>
-                <p>Microphone: {listening ? 'on' : 'off'}</p>
-                <button onClick={SpeechRecognition.startListening}>Start</button>
-                <button onClick={SpeechRecognition.stopListening}>Stop</button>
-                <button onClick={resetTranscript}>Reset</button>
-                <p>{transcript}</p>
+                <div className="p-3">
+                  <p>Microphone: {listening ? "on" : "off"}</p>
+                  <button onClick={SpeechRecognition.startListening}>Start</button>
+                  <button onClick={SpeechRecognition.stopListening}>Stop</button>
+                  <button onClick={resetTranscript}>Reset</button>
+                  <p>Speech Transcript: {transcript}</p>
+                  <p>Sign Language Text: {signLanguageText}</p> {/* Display processed text */}
+                </div>
                 {showChat && (
                   <motion.div
                     layout
@@ -456,18 +436,16 @@ const Room = () => {
                           <div className="text-xl text-slate-400">
                             <UsersIcon />
                           </div>
-                          <div className="ml-2 text-sm font">Particpents</div>
+                          <div className="ml-2 text-sm font">Participants</div>
                           <div
-                            className={`${particpentsOpen && "rotate-180"
-                              } transition-all  ml-auto text-lg`}
+                            className={`${particpentsOpen && "rotate-180"} transition-all ml-auto text-lg`}
                           >
                             <DownIcon />
                           </div>
                         </div>
                         <motion.div
                           layout
-                          className={`${particpentsOpen ? "block" : "hidden"
-                            } flex flex-col w-full mt-2 h-full max-h-[50vh] overflow-y-scroll gap-3 p-2 bg-blue-600`}
+                          className={`${particpentsOpen ? "block" : "hidden"} flex flex-col w-full mt-2 h-full max-h-[50vh] overflow-y-scroll gap-3 p-2 bg-blue-600`}
                         >
                           <AnimatePresence>
                             <motion.div
@@ -542,12 +520,10 @@ const Room = () => {
                               initial={{ x: msg.send ? 100 : -100, opacity: 0 }}
                               animate={{ x: 0, opacity: 1 }}
                               transition={{ duration: 0.08 }}
-                              className={`flex gap-2 ${msg?.user.id === user?.uid ? "flex-row-reverse" : ""
-                                }`}
+                              className={`flex gap-2 ${msg?.user.id === user?.uid ? "flex-row-reverse" : ""}`}
                               key={index}
                             >
                               <img
-                                // src="https://avatars.githubusercontent.com/u/83828231"
                                 src={msg?.user.profilePic}
                                 alt={msg?.user.name}
                                 className="h-8 w-8 aspect-square rounded-full object-cover"
@@ -568,14 +544,14 @@ const Room = () => {
                               type="text"
                               value={msgText}
                               onChange={(e) => setMsgText(e.target.value)}
-                              className="h-10 p-3 w-full text-sm text-darkBlue1 outline-none  rounded-lg"
+                              className="h-10 p-3 w-full text-sm text-darkBlue1 outline-none rounded-lg"
                               placeholder="Enter message.. "
                             />
                             {msgText && (
                               <button
                                 type="button"
                                 onClick={() => setMsgText("")}
-                                className="bg-transparent text-darkBlue2 absolute top-0 right-0 text-lg cursor-pointer p-2  h-full"
+                                className="bg-transparent text-darkBlue2 absolute top-0 right-0 text-lg cursor-pointer p-2 h-full"
                               >
                                 <ClearIcon />
                               </button>
@@ -596,14 +572,14 @@ const Room = () => {
           )}
           {share && (
             <div className="fixed flex items-center justify-center top-0 left-0 h-full w-full z-30 bg-slate-800/60 backdrop-blur">
-              <div className="bg-white  p-3 rounded shadow shadow-white w-full mx-auto max-w-[500px] relative">
+              <div className="bg-white p-3 rounded shadow shadow-white w-full mx-auto max-w-[500px] relative">
                 <div className="flex items-center justify-between">
                   <div className="text-slate-800">Share the link with someone to join the room</div>
                   <div>
                     <ClearIcon size={30} color="#121212" onClick={() => setShare(false)} />
                   </div>
                 </div>
-                <div className="my-5 rounded flex items-center justify-between gap-2 text-sm text-slate-500 bg-slate-200 p-2 ">
+                <div className="my-5 rounded flex items-center justify-between gap-2 text-sm text-slate-500 bg-slate-200 p-2">
                   <LinkIcon />
                   <div className="flex-grow">
                     {window.location.href.length > 40
@@ -617,7 +593,6 @@ const Room = () => {
                 </div>
                 <div className="flex w-full aspect-square h-full justify-center items-center">
                   <QRCode
-                    // className="hidden"
                     size={200}
                     value={window.location.href}
                     logoImage="/images/logo.png"
