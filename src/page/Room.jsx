@@ -62,13 +62,18 @@ const Room = () => {
   const [msgText, setMsgText] = useState("");
   const localVideo = useRef();
   const mediaRecorder = useRef(null);
-  const [signLanguageText, setSignLanguageText] = useState(""); // To display processed text
+  const [signLanguageText, setSignLanguageText] = useState("");
+  const [transcriptions, setTranscriptions] = useState({}); // New state for transcriptions
 
   // user
   const { user, login } = useAuth();
   const [particpentsOpen, setParticpentsOpen] = useState(true);
   const [processedStream, setProcessedStream] = useState(null);
   const processedVideo = useRef();
+  const [isRecording, setIsRecording] = useState(true);
+  const [roomTranscripts, setRoomTranscripts] = useState([]);
+  const recognitionRef = useRef(null);
+
 
   const {
     transcript,
@@ -100,35 +105,122 @@ const Room = () => {
       mimeType: "video/webm;codecs=vp8",
       videoBitsPerSecond: 1000000,
     });
-  
+
+    // setIsRecording(true);
+
     mediaRecorder.current.ondataavailable = async (event) => {
       if (event.data.size > 0) {
-        // Convert Blob to ArrayBuffer
         const arrayBuffer = await event.data.arrayBuffer();
         socket.current.emit("video-chunk", {
           roomID,
           userId: user.uid,
-          chunk: arrayBuffer, // Send ArrayBuffer instead of Blob
+          chunk: arrayBuffer,
         });
       }
     };
-  
+
     mediaRecorder.current.onstop = () => {
       socket.current.emit("video-stream-end", { roomID, userId: user.uid });
     };
-  
+
     mediaRecorder.current.start(100);
   };
 
+
+  useEffect(() => {
+    if (!SpeechRecognition.browserSupportsSpeechRecognition()) {
+      console.log("Speech Recognition not supported");
+      return;
+    }
+
+    // Store the recognition instance
+    recognitionRef.current = SpeechRecognition.getRecognition();
+
+    if (isRecording) {
+      console.log("Starting speech recognition...");
+      SpeechRecognition.startListening({
+        continuous: true,
+        language: "en-US",
+      });
+    } else {
+      console.log("Stopping speech recognition...");
+      SpeechRecognition.stopListening();
+    }
+
+    // Handle recognition stop or error to restart
+    const handleRecognitionEnd = () => {
+      if (isRecording && !listening) {
+        console.log("Recognition ended, restarting...");
+        SpeechRecognition.startListening({
+          continuous: true,
+          language: "en-US",
+        });
+      }
+    };
+
+    const handleRecognitionError = (event) => {
+      console.error("Recognition error:", event.error);
+      if (isRecording && !listening) {
+        console.log("Recognition error, restarting...");
+        SpeechRecognition.startListening({
+          continuous: true,
+          language: "en-US",
+        });
+      }
+    };
+
+    recognitionRef.current.onend = handleRecognitionEnd;
+    recognitionRef.current.onerror = handleRecognitionError;
+
+    // Cleanup on component unmount
+    return () => {
+      SpeechRecognition.stopListening();
+      if (mediaRecorder.current?.state === "recording") {
+        mediaRecorder.current.stop();
+      }
+      if (recognitionRef.current) {
+        recognitionRef.current.onend = null;
+        recognitionRef.current.onerror = null;
+      }
+    };
+  }, []);
+
+  // // Handle transcript updates
+  useEffect(() => {
+    if (transcript) {
+      console.log("New transcript:", transcript);
+      socket.current.emit("transcript", {
+        roomID,
+        userId: user.uid,
+        text: transcript,
+        username: user?.displayName
+      });
+      // Optionally reset transcript after processing
+      // resetTranscript();
+    }
+  }, [transcript, roomID, user.uid]);
   useEffect(() => {
     const unsub = () => {
-      socket.current = io.connect("http://localhost:5555");
-      
+      socket.current = io.connect("https://group8-sos-backend.onrender.com/");
+
       // Receive processed sign language text from backend
       socket.current.on("sign-language-text", (data) => {
         setSignLanguageText(data.text);
       });
 
+      // Receive transcription text from backend
+      socket.current.on("transcription-text", ({ userId, text }) => {
+        setTranscriptions((prev) => ({
+          ...prev,
+          [userId]: text,
+        }));
+      });
+
+      socket.current.on("room-transcripts", (data) => {
+        console.log("Received room transcripts:", data.transcripts);
+        setRoomTranscripts(data.transcripts);
+      });
+    
       socket.current.on("message", (data) => {
         const audio = new Audio(msgSFX);
         if (user?.uid !== data.user.id) {
@@ -216,6 +308,7 @@ const Room = () => {
             });
           });
       }
+
     };
     unsub();
 
@@ -230,6 +323,13 @@ const Room = () => {
       socket.current.disconnect();
     };
   }, [user, roomID]);
+
+  // Auto-scroll chat to the latest message
+  useEffect(() => {
+    if (chatScroll.current) {
+      chatScroll.current.scrollTop = chatScroll.current.scrollHeight;
+    }
+  }, [msgs]);
 
   if (!browserSupportsSpeechRecognition) {
     return <span>Browser doesn't support speech recognition.</span>;
@@ -375,6 +475,8 @@ const Room = () => {
                             {videoActive ? <VideoOnIcon /> : <VideoOffIcon />}
                           </button>
                         </div>
+                        <div>
+                          </div>
                       </div>
                       <div className="flex-grow flex justify-center">
                         <button
@@ -415,7 +517,26 @@ const Room = () => {
                   <button onClick={SpeechRecognition.stopListening}>Stop</button>
                   <button onClick={resetTranscript}>Reset</button>
                   <p>Speech Transcript: {transcript}</p>
-                  <p>Sign Language Text: {signLanguageText}</p> {/* Display processed text */}
+                  <p>Sign Language Text: {signLanguageText}</p>
+                  <div className="mt-4">
+                    <p className="text-sm font-medium">Video Transcriptions:</p>
+                    <div className="mt-2 flex flex-col gap-2">
+                      {Object.entries(transcriptions).map(([userId, text]) => {
+                        const peer = peersRef.current.find((p) => p.user.uid === userId) || {
+                          user: { name: userId === user.uid ? user.displayName : "Unknown" },
+                        };
+                        return (
+                          <div
+                            key={userId}
+                            className="bg-darkBlue1 py-2 px-3 text-xs rounded-lg border-2 border-lightGray"
+                          >
+                            <span className="font-medium">{peer.user.name || "Unknown"}: </span>
+                            {text}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
                 </div>
                 {showChat && (
                   <motion.div
