@@ -1,7 +1,8 @@
 import React, { useEffect, useState, useRef } from "react";
 import { useNavigate, useParams } from "react-router-dom";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 
-// icons
+// Icons
 import { IoChatboxOutline as ChatIcon } from "react-icons/io5";
 import { VscTriangleDown as DownIcon } from "react-icons/vsc";
 import { FaUsers as UsersIcon } from "react-icons/fa";
@@ -18,19 +19,19 @@ import { IoMic as MicOnIcon } from "react-icons/io5";
 import { IoMicOff as MicOffIcon } from "react-icons/io5";
 import { BsPin as PinIcon } from "react-icons/bs";
 import { BsPinFill as PinActiveIcon } from "react-icons/bs";
-
+import { MdScreenShare as ScreenShareIcon } from "react-icons/md";
 import { QRCode } from "react-qrcode-logo";
 import MeetGridCard from "../components/MeetGridCard";
 
-// framer motion
+// Framer Motion
 import { motion, AnimatePresence } from "framer-motion";
 
-// importing audios
+// Importing audios
 import joinSFX from "../sounds/join.mp3";
 import msgSFX from "../sounds/message.mp3";
 import leaveSFX from "../sounds/leave.mp3";
 
-// simple peer
+// Simple Peer
 import Peer from "simple-peer";
 import { io } from "socket.io-client";
 import { useAuth } from "../context/AuthContext";
@@ -60,15 +61,16 @@ const Room = () => {
   const [videoActive, setVideoActive] = useState(true);
   const [msgs, setMsgs] = useState([]);
   const [msgText, setMsgText] = useState("");
+  const [suggestions, setSuggestions] = useState([]);
   const localVideo = useRef();
   const mediaRecorder = useRef(null);
-  const [signLanguageText, setSignLanguageText] = useState(""); // To display processed text
-
-  // user
+  const [signLanguageText, setSignLanguageText] = useState("");
   const { user, login } = useAuth();
   const [particpentsOpen, setParticpentsOpen] = useState(true);
   const [processedStream, setProcessedStream] = useState(null);
   const processedVideo = useRef();
+  const [screenStream, setScreenStream] = useState(null);
+  const [screenSharing, setScreenSharing] = useState(false);
 
   const {
     transcript,
@@ -77,9 +79,70 @@ const Room = () => {
     browserSupportsSpeechRecognition,
   } = useSpeechRecognition();
 
+  // Initialize Gemini AI
+  const genAI = new GoogleGenerativeAI(process.env.REACT_APP_GEMINI_API_KEY);
+  const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+
+  // LocalStorage key for messages
+  const storageKey = `chat_${roomID}`;
+
+  // Load messages from localStorage on mount
+  useEffect(() => {
+    const storedMsgs = localStorage.getItem(storageKey);
+    if (storedMsgs) {
+      try {
+        setMsgs(JSON.parse(storedMsgs));
+      } catch (err) {
+        console.error("Error parsing localStorage messages:", err);
+      }
+    }
+  }, [storageKey]);
+
+  // Save messages to localStorage whenever msgs changes
+  useEffect(() => {
+    if (msgs.length > 0) {
+      localStorage.setItem(storageKey, JSON.stringify(msgs));
+    }
+  }, [msgs]);
+
+  // Clear localStorage on meeting end (unmount or End Call)
+  useEffect(() => {
+    return () => {
+      localStorage.removeItem(storageKey);
+      setMsgs([]);
+    };
+  }, [storageKey]);
+
+  // Fetch Gemini suggestions for the latest message
+  useEffect(() => {
+    if (msgs.length === 0) return;
+
+    const latestMsg = msgs[msgs.length - 1].message;
+    const fetchSuggestions = async () => {
+      try {
+        const prompt = `Provide 3 short reply suggestions for the following chat message: "${latestMsg}". Just provide the replies in 3 new lines in plain text. Do not give any extra information.`;
+        const result = await model.generateContent(prompt);
+        const response = await result.response;
+        const text = response.text();
+        console.log(text)
+        const suggestionList = text
+          .split("\n")
+          .filter((line) => line.trim())
+          .slice(0, 3);
+        setSuggestions(suggestionList);
+      } catch (err) {
+        console.error("Error fetching Gemini suggestions:", err);
+        setSuggestions([]);
+      }
+    };
+
+    fetchSuggestions();
+  }, [msgs]);
+
+  // Handle sending a message
   const sendMessage = (e) => {
     e.preventDefault();
-    if (msgText) {
+    if (msgText.trim()) {
       socket.current.emit("send message", {
         roomID,
         from: socket.current.id,
@@ -90,40 +153,21 @@ const Room = () => {
         },
         message: msgText.trim(),
       });
+      setMsgText("");
+      setSuggestions([]);
     }
-    setMsgText("");
   };
 
-  // Start streaming video to backend
-  const startStreamingToBackend = (stream) => {
-    mediaRecorder.current = new MediaRecorder(stream, {
-      mimeType: "video/webm;codecs=vp8",
-      videoBitsPerSecond: 1000000,
-    });
-  
-    mediaRecorder.current.ondataavailable = async (event) => {
-      if (event.data.size > 0) {
-        // Convert Blob to ArrayBuffer
-        const arrayBuffer = await event.data.arrayBuffer();
-        socket.current.emit("video-chunk", {
-          roomID,
-          userId: user.uid,
-          chunk: arrayBuffer, // Send ArrayBuffer instead of Blob
-        });
-      }
-    };
-  
-    mediaRecorder.current.onstop = () => {
-      socket.current.emit("video-stream-end", { roomID, userId: user.uid });
-    };
-  
-    mediaRecorder.current.start(100);
+  // Handle selecting a suggestion
+  const handleSuggestionClick = (suggestion) => {
+    setMsgText(suggestion);
   };
 
+  // Socket.IO and WebRTC setup
   useEffect(() => {
     const unsub = () => {
       socket.current = io.connect("http://localhost:5555");
-      
+
       // Receive processed sign language text from backend
       socket.current.on("sign-language-text", (data) => {
         setSignLanguageText(data.text);
@@ -231,6 +275,31 @@ const Room = () => {
     };
   }, [user, roomID]);
 
+  // Start streaming video to backend
+  const startStreamingToBackend = (stream) => {
+    mediaRecorder.current = new MediaRecorder(stream, {
+      mimeType: "video/webm;codecs=vp8",
+      videoBitsPerSecond: 1000000,
+    });
+
+    mediaRecorder.current.ondataavailable = async (event) => {
+      if (event.data.size > 0) {
+        const arrayBuffer = await event.data.arrayBuffer();
+        socket.current.emit("video-chunk", {
+          roomID,
+          userId: user.uid,
+          chunk: arrayBuffer,
+        });
+      }
+    };
+
+    mediaRecorder.current.onstop = () => {
+      socket.current.emit("video-stream-end", { roomID, userId: user.uid });
+    };
+
+    mediaRecorder.current.start(100);
+  };
+
   if (!browserSupportsSpeechRecognition) {
     return <span>Browser doesn't support speech recognition.</span>;
   }
@@ -295,7 +364,7 @@ const Room = () => {
                   >
                     <motion.div
                       layout
-                      className={`grid grid-cols-1 gap-4  ${showChat ? "md:grid-cols-2" : "lg:grid-cols-3 sm:grid-cols-2"} `}
+                      className={`grid grid-cols-1 gap-4 ${showChat ? "md:grid-cols-2" : "lg:grid-cols-3 sm:grid-cols-2"}`}
                     >
                       <motion.div
                         layout
@@ -334,8 +403,17 @@ const Room = () => {
                         </div>
                       </motion.div>
                       {peers.map((peer) => (
-                        <MeetGridCard key={peer?.peerID} user={peer.user} peer={peer?.peer} />
+                        <MeetGridCard key={peer?.peerID} user={peer.user} micActive={peer.micActive} peer={peer.peer} />
                       ))}
+
+                      {screenSharing && screenStream && (
+                        <MeetGridCard
+                          key="screen-share"
+                          user={{ name: "You (Sharing Screen)", photoURL: user?.photoURL }}
+                          stream={screenStream}
+                          pinnedByDefault
+                        />
+                      )}
                     </motion.div>
                   </div>
                   <div className="w-full h-16 bg-darkBlue1 border-t-2 border-lightGray p-3">
@@ -375,6 +453,37 @@ const Room = () => {
                             {videoActive ? <VideoOnIcon /> : <VideoOffIcon />}
                           </button>
                         </div>
+                        <div>
+                          <button
+                            className={`${screenSharing ? "bg-blue border-transparent" : "bg-slate-800/70 backdrop-blur border-gray"} border-2 p-2 cursor-pointer rounded-xl text-white text-xl`}
+                            onClick={async () => {
+                              if (!screenSharing) {
+                                try {
+                                  const stream = await navigator.mediaDevices.getDisplayMedia({
+                                    video: { cursor: "always" },
+                                    audio: false,
+                                  });
+
+                                  setScreenStream(stream);
+                                  setScreenSharing(true);
+
+                                  stream.getVideoTracks()[0].onended = () => {
+                                    setScreenStream(null);
+                                    setScreenSharing(false);
+                                  };
+                                } catch (err) {
+                                  console.error("Screen sharing error:", err);
+                                }
+                              } else {
+                                screenStream?.getTracks().forEach((track) => track.stop());
+                                setScreenStream(null);
+                                setScreenSharing(false);
+                              }
+                            }}
+                          >
+                            {screenSharing ? <ScreenShareIcon /> : <ScreenShareIcon />}
+                          </button>
+                        </div>
                       </div>
                       <div className="flex-grow flex justify-center">
                         <button
@@ -409,14 +518,6 @@ const Room = () => {
                     </div>
                   </div>
                 </motion.div>
-                <div className="p-3">
-                  <p>Microphone: {listening ? "on" : "off"}</p>
-                  <button onClick={SpeechRecognition.startListening}>Start</button>
-                  <button onClick={SpeechRecognition.stopListening}>Stop</button>
-                  <button onClick={resetTranscript}>Reset</button>
-                  <p>Speech Transcript: {transcript}</p>
-                  <p>Sign Language Text: {signLanguageText}</p> {/* Display processed text */}
-                </div>
                 {showChat && (
                   <motion.div
                     layout
@@ -512,7 +613,7 @@ const Room = () => {
                         <motion.div
                           layout
                           ref={chatScroll}
-                          className="p-3 h-full overflow-y-scroll flex flex-col gap-4"
+                          className="p-3 h-full overflow-y-scroll flex flex-col gap-4 scrollbar-thin scrollbar-thumb-blue-600 scrollbar-track-darkBlue1"
                         >
                           {msgs.map((msg, index) => (
                             <motion.div
@@ -536,32 +637,48 @@ const Room = () => {
                         </motion.div>
                       </div>
                     </div>
-                    <div className="w-full h-16 bg-darkBlue1 border-t-2 border-lightGray p-3">
+                    <div className="w-full bg-darkBlue1 border-t-2 border-lightGray p-3">
                       <form onSubmit={sendMessage}>
-                        <div className="flex items-center gap-2">
-                          <div className="relative flex-grow">
-                            <input
-                              type="text"
-                              value={msgText}
-                              onChange={(e) => setMsgText(e.target.value)}
-                              className="h-10 p-3 w-full text-sm text-darkBlue1 outline-none rounded-lg"
-                              placeholder="Enter message.. "
-                            />
-                            {msgText && (
-                              <button
-                                type="button"
-                                onClick={() => setMsgText("")}
-                                className="bg-transparent text-darkBlue2 absolute top-0 right-0 text-lg cursor-pointer p-2 h-full"
-                              >
-                                <ClearIcon />
+                        <div className="flex flex-col gap-2">
+                          <div className="flex items-center gap-2">
+                            <div className="relative flex-grow">
+                              <input
+                                type="text"
+                                value={msgText}
+                                onChange={(e) => setMsgText(e.target.value)}
+                                className="h-10 p-3 w-full text-sm text-darkBlue1 outline-none rounded-lg"
+                                placeholder="Enter message.."
+                              />
+                              {msgText && (
+                                <button
+                                  type="button"
+                                  onClick={() => setMsgText("")}
+                                  className="bg-transparent text-darkBlue2 absolute top-0 right-0 text-lg cursor-pointer p-2 h-full"
+                                >
+                                  <ClearIcon />
+                                </button>
+                              )}
+                            </div>
+                            <div>
+                              <button className="bg-blue h-10 text-md aspect-square rounded-lg flex items-center justify-center">
+                                <SendIcon />
                               </button>
-                            )}
+                            </div>
                           </div>
-                          <div>
-                            <button className="bg-blue h-10 text-md aspect-square rounded-lg flex items-center justify-center">
-                              <SendIcon />
-                            </button>
-                          </div>
+                          {suggestions.length > 0 && (
+                            <div className="flex flex-wrap gap-2">
+                              {suggestions.map((suggestion, index) => (
+                                <button
+                                  key={index}
+                                  type="button"
+                                  onClick={() => handleSuggestionClick(suggestion)}
+                                  className="bg-blue text-white px-3 py-1 rounded-lg text-xs hover:bg-blue-600"
+                                >
+                                  {suggestion}
+                                </button>
+                              ))}
+                            </div>
+                          )}
                         </div>
                       </form>
                     </div>

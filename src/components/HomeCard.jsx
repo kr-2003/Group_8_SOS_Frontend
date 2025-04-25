@@ -1,5 +1,5 @@
 import React from "react";
-const HomeCard = ({ icon, title, desc, bgColor, route }) => {
+const HomeCard = ({ icon, title, desc, bgColor, route, onClick }) => {
   function dumpOptionsInfo() {
     const videoTrack = videoElem.srcObject.getVideoTracks()[0];
     console.log(videoTrack);
@@ -31,7 +31,7 @@ const HomeCard = ({ icon, title, desc, bgColor, route }) => {
 
   return (
     <div
-      onClick={startCapture}
+      onClick={onClick}
       className={` p-3 md:p-6 rounded md:rounded-2xl md:h-52 md:w-auto w-full md:aspect-square group ${bgColor} card`}
     >
       <div className="hidden">

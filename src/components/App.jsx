@@ -13,6 +13,7 @@ import Join from "../page/Join.jsx";
 import NotFound from "../page/NotFound";
 import Scanqr from "../page/Scanqr.jsx";
 import NewRoom from "../page/NewRoom";
+import ScheduleMeeting from "../components/ScheduleMeeting.jsx";
 
 const App = () => {
   return (
@@ -26,7 +27,7 @@ const App = () => {
           <Route path="/room/:roomID" element={<Room />} />
           <Route path="/join" element={<Join />} />
           <Route path="/scanqr" element={<Scanqr />} />
-
+          <Route path="/schedule" element={<ScheduleMeeting />} />
           <Route path="*" element={<NotFound />} />
         </Routes>
       </div>
