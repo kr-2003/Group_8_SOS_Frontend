@@ -73,7 +73,7 @@ const Room = () => {
   const [isRecording, setIsRecording] = useState(true);
   const [roomTranscripts, setRoomTranscripts] = useState([]);
   const recognitionRef = useRef(null);
-
+  const [isCaptionOn, setIsCaptionOn] = useState(false);
 
   const {
     transcript,
@@ -81,6 +81,9 @@ const Room = () => {
     resetTranscript,
     browserSupportsSpeechRecognition,
   } = useSpeechRecognition();
+
+  const captionButtonClick = () => {
+    setIsCaptionOn(!isCaptionOn);}
 
   const sendMessage = (e) => {
     e.preventDefault();
@@ -216,9 +219,34 @@ const Room = () => {
         }));
       });
 
+      // socket.current.on("room-transcripts", (data) => {
+      //   console.log("Received room transcripts:", data.transcripts);
+      //   setRoomTranscripts(data.transcripts);
+      // });
+
       socket.current.on("room-transcripts", (data) => {
         console.log("Received room transcripts:", data.transcripts);
-        setRoomTranscripts(data.transcripts);
+        setRoomTranscripts((prev) => {
+          const transcriptMap = new Map();
+
+          // Add existing transcripts to the map
+          prev.forEach((transcript) => {
+            transcriptMap.set(transcript.username, transcript);
+          });
+
+          // Update or add new transcripts
+          data.transcripts.forEach((transcript) => {
+            transcriptMap.set(transcript.username, {
+              ...transcript,
+              timestamp: transcript.timestamp || Date.now(),
+            });
+          });
+
+          // Convert map back to array and sort by timestamp
+          return Array.from(transcriptMap.values()).sort(
+            (a, b) => a.timestamp - b.timestamp
+          );
+        });
       });
     
       socket.current.on("message", (data) => {
@@ -438,6 +466,21 @@ const Room = () => {
                       ))}
                     </motion.div>
                   </div>
+                    {isCaptionOn && <div className="mt-4">
+                      {/* <p className="text-sm font-medium">Room Transcripts:</p> */}
+                      <div className="mt-2 flex flex-col gap-2">
+                        {roomTranscripts.map((transcript, index) => (
+                          <div
+                            key={transcript.username} // Use username as key for uniqueness
+                            className="bg-darkBlue1 py-2 px-3 text-xs rounded-lg border-2"
+                            style={{ border: "1px solid #ececec" }}
+                          >
+                            <span className="ml-2 text-sm font">{transcript.username || "Unknown"} : </span>
+                            <span className="ml-1 text-sm font">{transcript.text}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>}
                   <div className="w-full h-16 bg-darkBlue1 border-t-2 border-lightGray p-3">
                     <div className="flex items-center justify-between">
                       <div className="flex gap-2">
@@ -476,6 +519,14 @@ const Room = () => {
                           </button>
                         </div>
                         <div>
+                            <button onClick={captionButtonClick}
+                              className={`${isCaptionOn ? "bg-blue border-transparent" : "bg-slate-800/70 backdrop-blur border-gray"} border-2 p-2 cursor-pointer rounded-xl text-white`}
+                              style={{ fontSize: "14px" }}
+                            >
+                              Caption
+                            </button>
+                        </div>
+                        <div>
                           </div>
                       </div>
                       <div className="flex-grow flex justify-center">
@@ -511,13 +562,27 @@ const Room = () => {
                     </div>
                   </div>
                 </motion.div>
-                <div className="p-3">
+                {/* <div className="p-3">
                   <p>Microphone: {listening ? "on" : "off"}</p>
                   <button onClick={SpeechRecognition.startListening}>Start</button>
                   <button onClick={SpeechRecognition.stopListening}>Stop</button>
                   <button onClick={resetTranscript}>Reset</button>
                   <p>Speech Transcript: {transcript}</p>
                   <p>Sign Language Text: {signLanguageText}</p>
+                    <div className="mt-4">
+                      <p className="text-sm font-medium">Room Transcripts:</p>
+                      <div className="mt-2 flex flex-col gap-2">
+                        {roomTranscripts.map((transcript, index) => (
+                          <div
+                            key={transcript.username} // Use username as key for uniqueness
+                            className="bg-darkBlue1 py-2 px-3 text-xs rounded-lg border-2 border-lightGray"
+                          >
+                            <span className="font-medium">{transcript.username || "Unknown"}: </span>
+                            {transcript.text}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
                   <div className="mt-4">
                     <p className="text-sm font-medium">Video Transcriptions:</p>
                     <div className="mt-2 flex flex-col gap-2">
@@ -537,7 +602,7 @@ const Room = () => {
                       })}
                     </div>
                   </div>
-                </div>
+                </div> */}
                 {showChat && (
                   <motion.div
                     layout
