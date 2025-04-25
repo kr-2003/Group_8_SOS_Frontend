@@ -124,7 +124,6 @@ const Room = () => {
         const result = await model.generateContent(prompt);
         const response = await result.response;
         const text = response.text();
-        console.log(text)
         const suggestionList = text
           .split("\n")
           .filter((line) => line.trim())
@@ -138,6 +137,13 @@ const Room = () => {
 
     fetchSuggestions();
   }, [msgs]);
+
+  // Auto-scroll to bottom of chat
+  useEffect(() => {
+    if (chatScroll.current) {
+      chatScroll.current.scrollTop = chatScroll.current.scrollHeight;
+    }
+  }, [msgs, suggestions]);
 
   // Handle sending a message
   const sendMessage = (e) => {
@@ -153,6 +159,18 @@ const Room = () => {
         },
         message: msgText.trim(),
       });
+      setMsgs((msgs) => [
+        ...msgs,
+        {
+          send: true,
+          user: {
+            id: user.uid,
+            name: user?.displayName,
+            profilePic: user.photoURL,
+          },
+          message: msgText.trim(),
+        },
+      ]);
       setMsgText("");
       setSuggestions([]);
     }
@@ -618,20 +636,36 @@ const Room = () => {
                           {msgs.map((msg, index) => (
                             <motion.div
                               layout
+                              key={index}
                               initial={{ x: msg.send ? 100 : -100, opacity: 0 }}
                               animate={{ x: 0, opacity: 1 }}
                               transition={{ duration: 0.08 }}
                               className={`flex gap-2 ${msg?.user.id === user?.uid ? "flex-row-reverse" : ""}`}
-                              key={index}
                             >
                               <img
                                 src={msg?.user.profilePic}
                                 alt={msg?.user.name}
                                 className="h-8 w-8 aspect-square rounded-full object-cover"
                               />
-                              <p className="bg-darkBlue1 py-2 px-3 text-xs w-auto max-w-[87%] rounded-lg border-2 border-lightGray">
-                                {msg?.message}
-                              </p>
+                              <div className="flex flex-col gap-2">
+                                <p className="bg-darkBlue1 py-2 px-3 text-xs w-auto max-w-[87%] rounded-lg border-2 border-lightGray">
+                                  {msg?.message}
+                                </p>
+                                {index === msgs.length - 1 && suggestions.length > 0 && msg.user.id !== user.uid && (
+                                  <div className="flex flex-wrap gap-2">
+                                    {suggestions.map((suggestion, suggestionIndex) => (
+                                      <button
+                                        key={suggestionIndex}
+                                        type="button"
+                                        onClick={() => handleSuggestionClick(suggestion)}
+                                        className="bg-blue text-white px-3 py-1 rounded-lg text-xs hover:bg-blue-600"
+                                      >
+                                        {suggestion}
+                                      </button>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
                             </motion.div>
                           ))}
                         </motion.div>
@@ -639,46 +673,30 @@ const Room = () => {
                     </div>
                     <div className="w-full bg-darkBlue1 border-t-2 border-lightGray p-3">
                       <form onSubmit={sendMessage}>
-                        <div className="flex flex-col gap-2">
-                          <div className="flex items-center gap-2">
-                            <div className="relative flex-grow">
-                              <input
-                                type="text"
-                                value={msgText}
-                                onChange={(e) => setMsgText(e.target.value)}
-                                className="h-10 p-3 w-full text-sm text-darkBlue1 outline-none rounded-lg"
-                                placeholder="Enter message.."
-                              />
-                              {msgText && (
-                                <button
-                                  type="button"
-                                  onClick={() => setMsgText("")}
-                                  className="bg-transparent text-darkBlue2 absolute top-0 right-0 text-lg cursor-pointer p-2 h-full"
-                                >
-                                  <ClearIcon />
-                                </button>
-                              )}
-                            </div>
-                            <div>
-                              <button className="bg-blue h-10 text-md aspect-square rounded-lg flex items-center justify-center">
-                                <SendIcon />
+                        <div className="flex items-center gap-2">
+                          <div className="relative flex-grow">
+                            <input
+                              type="text"
+                              value={msgText}
+                              onChange={(e) => setMsgText(e.target.value)}
+                              className="h-10 p-3 w-full text-sm text-darkBlue1 outline-none rounded-lg"
+                              placeholder="Enter message.."
+                            />
+                            {msgText && (
+                              <button
+                                type="button"
+                                onClick={() => setMsgText("")}
+                                className="bg-transparent text-darkBlue2 absolute top-0 right-0 text-lg cursor-pointer p-2 h-full"
+                              >
+                                <ClearIcon />
                               </button>
-                            </div>
+                            )}
                           </div>
-                          {suggestions.length > 0 && (
-                            <div className="flex flex-wrap gap-2">
-                              {suggestions.map((suggestion, index) => (
-                                <button
-                                  key={index}
-                                  type="button"
-                                  onClick={() => handleSuggestionClick(suggestion)}
-                                  className="bg-blue text-white px-3 py-1 rounded-lg text-xs hover:bg-blue-600"
-                                >
-                                  {suggestion}
-                                </button>
-                              ))}
-                            </div>
-                          )}
+                          <div>
+                            <button className="bg-blue h-10 text-md aspect-square rounded-lg flex items-center justify-center">
+                              <SendIcon />
+                            </button>
+                          </div>
                         </div>
                       </form>
                     </div>
