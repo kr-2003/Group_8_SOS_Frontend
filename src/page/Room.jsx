@@ -150,6 +150,8 @@ const Room = () => {
   const canvasRefScreen = useRef(null);
   const audioContextRef = useRef(null);
   const [downloadTriggered, setDownloadTriggered] = useState(false);
+  const [isSignLanguage, setIsSignLanguage] = useState(false);
+
 
   const {
     transcript,
@@ -514,9 +516,72 @@ const Room = () => {
       // resetTranscript();
     }
   }, [transcript, roomID, user.uid]);
+
+  const captureAndSendFrame = async () => {
+    if (isSignLanguage && localVideo.current && localVideo.current.videoWidth > 0 && localVideo.current.videoHeight > 0) {
+      const canvas = canvasRef.current;
+      canvas.width = localVideo.current.videoWidth;
+      canvas.height = localVideo.current.videoHeight;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(
+        localVideo.current,
+        0,
+        0,
+        canvas.width,
+        canvas.height
+      );
+
+      canvas.toBlob(async (blob) => {
+        if (blob) {
+          const formData = new FormData();
+          formData.append("image", blob, "frame.png"); // 'image' must match your FastAPI endpoint's parameter name
+
+          try {
+            const response = await fetch("http://localhost:8000/predict", {
+              method: "POST",
+              body: formData,
+            });
+
+            if (response.ok) {
+              const data = await response.json();
+              setPrediction(data.message); // Or handle the prediction data as needed
+              console.log(data);
+              setSignLangText(data.result);
+              setPrevChar(data.current_letter);
+            } else {
+              console.error(
+                "Error sending frame:",
+                response.status,
+                response.statusText
+              );
+            }
+          } catch (error) {
+            console.error("Error sending frame:", error);
+          }
+        }
+      }, "image/png");
+    }
+  };
+
+  const signLanguageButtonClick = () => {
+    setIsSignLanguage(!isSignLanguage);
+  };
+
+  useEffect(() => {
+    let intervalId;
+
+    if (isSignLanguage) {
+      intervalId = setInterval(captureAndSendFrame, 1000); // Trigger capture every 1 second
+    } else {
+      clearInterval(intervalId); // Clear the interval when sign language mode is off
+    }
+
+    return () => clearInterval(intervalId); // Cleanup on unmount or when isSignLanguage changes
+  }, [isSignLanguage]); // Re-run effect when isSignLanguage changes
+
   useEffect(() => {
     const unsub = () => {
-      socket.current = io.connect("http://localhost:5555");
+      socket.current = io.connect("https://group8-sos-backend.onrender.com");
       // Receive processed sign language text from backend
       socket.current.on("sign-language-text", (data) => {
         setSignLanguageText(data.text);
@@ -610,57 +675,7 @@ const Room = () => {
             localVideo.current.srcObject = stream;
 
             // Start streaming to backend
-            startStreamingToBackend(stream);
-
-
-
-            const captureAndSendFrame = async () => {
-              if (localVideo.current && localVideo.current.videoWidth > 0 && localVideo.current.videoHeight > 0) {
-                const canvas = canvasRef.current;
-                canvas.width = localVideo.current.videoWidth;
-                canvas.height = localVideo.current.videoHeight;
-                const ctx = canvas.getContext("2d");
-                ctx.drawImage(
-                  localVideo.current,
-                  0,
-                  0,
-                  canvas.width,
-                  canvas.height
-                );
-
-                canvas.toBlob(async (blob) => {
-                  if (blob) {
-                    const formData = new FormData();
-                    formData.append("image", blob, "frame.png"); // 'image' must match your FastAPI endpoint's parameter name
-
-                    try {
-                      const response = await fetch("http://localhost:8000/predict", {
-                        method: "POST",
-                        body: formData,
-                      });
-
-                      if (response.ok) {
-                        const data = await response.json();
-                        setPrediction(data.message); // Or handle the prediction data as needed
-                        console.log(data);
-                        setSignLangText(data.result);
-                        setPrevChar(data.current_letter);
-                      } else {
-                        console.error(
-                          "Error sending frame:",
-                          response.status,
-                          response.statusText
-                        );
-                      }
-                    } catch (error) {
-                      console.error("Error sending frame:", error);
-                    }
-                  }
-                }, "image/png");
-              }
-            };
-
-            const frameInterval = setInterval(captureAndSendFrame, 1000)
+            // startStreamingToBackend(stream);
 
             socket.current.emit("join room", {
               roomID,
@@ -721,10 +736,6 @@ const Room = () => {
               peersRef.current = peers;
               setPeers((users) => users.filter((p) => p.peerID !== id));
             });
-
-            return () => {
-              clearInterval(frameInterval);
-            };
           });
       }
 
@@ -901,7 +912,7 @@ const Room = () => {
                       )}
                     </motion.div>
                   </div>
-                  <div>
+                  {isSignLanguage && (
                     <div className="flex items-center justify-between bg-darkBlue1 p-3">
                       <div className="text-xl text-slate-400">
                         {signLangText}
@@ -911,7 +922,7 @@ const Room = () => {
                         {prevChar}
                       </div>
                     </div>
-                  </div>
+                  )}
                   {isCaptionOn && <div className="mt-4">
                     {/* <p className="text-sm font-medium">Room Transcripts:</p> */}
                     <div className="mt-2 flex flex-col gap-2">
@@ -970,6 +981,14 @@ const Room = () => {
                               style={{ fontSize: "14px" }}
                             >
                               Caption
+                            </button>
+                        </div>
+                        <div>
+                            <button onClick={signLanguageButtonClick}
+                              className={`${isSignLanguage ? "bg-blue border-transparent" : "bg-slate-800/70 backdrop-blur border-gray"} border-2 p-2 cursor-pointer rounded-xl text-white`}
+                              style={{ fontSize: "14px" }}
+                            >
+                              Sign Language
                             </button>
                         </div>
                         <div>
