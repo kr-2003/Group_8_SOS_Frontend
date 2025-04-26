@@ -366,8 +366,34 @@ const Room = () => {
       //   setRoomTranscripts(data.transcripts);
       // });
 
+      // socket.current.on("room-transcripts", (data) => {
+      //   console.log("Received room transcripts:", data.transcripts);
+      //   setRoomTranscripts(data.transcripts);
+      // });
+
       socket.current.on("room-transcripts", (data) => {
         console.log("Received room transcripts:", data.transcripts);
+        setRoomTranscripts((prev) => {
+          const transcriptMap = new Map();
+
+          // Add existing transcripts to the map
+          prev.forEach((transcript) => {
+            transcriptMap.set(transcript.username, transcript);
+          });
+
+          // Update or add new transcripts
+          data.transcripts.forEach((transcript) => {
+            transcriptMap.set(transcript.username, {
+              ...transcript,
+              timestamp: transcript.timestamp || Date.now(),
+            });
+          });
+
+          // Convert map back to array and sort by timestamp
+          return Array.from(transcriptMap.values()).sort(
+            (a, b) => a.timestamp - b.timestamp
+          );
+        });
         setRoomTranscripts((prev) => {
           const transcriptMap = new Map();
 
@@ -733,12 +759,12 @@ const Room = () => {
                           </button>
                         </div>
                         <div>
-                          <button onClick={captionButtonClick}
-                            className={`${isCaptionOn ? "bg-blue border-transparent" : "bg-slate-800/70 backdrop-blur border-gray"} border-2 p-2 cursor-pointer rounded-xl text-white`}
-                            style={{ fontSize: "14px" }}
-                          >
-                            Caption
-                          </button>
+                            <button onClick={captionButtonClick}
+                              className={`${isCaptionOn ? "bg-blue border-transparent" : "bg-slate-800/70 backdrop-blur border-gray"} border-2 p-2 cursor-pointer rounded-xl text-white`}
+                              style={{ fontSize: "14px" }}
+                            >
+                              Caption
+                            </button>
                         </div>
                         <div>
                         </div>
@@ -783,6 +809,20 @@ const Room = () => {
                   <button onClick={resetTranscript}>Reset</button>
                   <p>Speech Transcript: {transcript}</p>
                   <p>Sign Language Text: {signLanguageText}</p>
+                    <div className="mt-4">
+                      <p className="text-sm font-medium">Room Transcripts:</p>
+                      <div className="mt-2 flex flex-col gap-2">
+                        {roomTranscripts.map((transcript, index) => (
+                          <div
+                            key={transcript.username} // Use username as key for uniqueness
+                            className="bg-darkBlue1 py-2 px-3 text-xs rounded-lg border-2 border-lightGray"
+                          >
+                            <span className="font-medium">{transcript.username || "Unknown"}: </span>
+                            {transcript.text}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
                     <div className="mt-4">
                       <p className="text-sm font-medium">Room Transcripts:</p>
                       <div className="mt-2 flex flex-col gap-2">
