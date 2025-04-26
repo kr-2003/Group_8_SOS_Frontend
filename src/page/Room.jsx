@@ -1,7 +1,9 @@
 import React, { useEffect, useState, useRef } from "react";
 import { useNavigate, useParams } from "react-router-dom";
+import { GoogleGenerativeAI } from "@google/generative-ai";
+import { useReactMediaRecorder } from "react-media-recorder";
 
-// icons
+// Icons
 import { IoChatboxOutline as ChatIcon } from "react-icons/io5";
 import { VscTriangleDown as DownIcon } from "react-icons/vsc";
 import { FaUsers as UsersIcon } from "react-icons/fa";
@@ -19,19 +21,21 @@ import { IoMicOff as MicOffIcon } from "react-icons/io5";
 import { BsPin as PinIcon } from "react-icons/bs";
 import { BsPinFill as PinActiveIcon } from "react-icons/bs";
 import { BsSoundwave as MorseIcon } from "react-icons/bs";
-
+import { MdScreenShare as ScreenShareIcon } from "react-icons/md";
+import { BsRecordCircle as RecordIcon } from "react-icons/bs";
+import { BsStopCircle as StopIcon } from "react-icons/bs";
 import { QRCode } from "react-qrcode-logo";
 import MeetGridCard from "../components/MeetGridCard";
 
-// framer motion
+// Framer Motion
 import { motion, AnimatePresence } from "framer-motion";
 
-// importing audios
+// Importing audios
 import joinSFX from "../sounds/join.mp3";
 import msgSFX from "../sounds/message.mp3";
 import leaveSFX from "../sounds/leave.mp3";
 
-// simple peer
+// Simple Peer
 import Peer from "simple-peer";
 import { io } from "socket.io-client";
 import { useAuth } from "../context/AuthContext";
@@ -61,6 +65,7 @@ const Room = () => {
   const [videoActive, setVideoActive] = useState(true);
   const [msgs, setMsgs] = useState([]);
   const [msgText, setMsgText] = useState("");
+  const [suggestions, setSuggestions] = useState([]);
   const localVideo = useRef();
   const mediaRecorder = useRef(null);
   const [signLanguageText, setSignLanguageText] = useState("");
@@ -140,6 +145,11 @@ const Room = () => {
       audioContext.close();
     }, currentTime * 1000 + 100);
   };
+  const [screenStream, setScreenStream] = useState(null);
+  const [screenSharing, setScreenSharing] = useState(false);
+  const canvasRefScreen = useRef(null);
+  const audioContextRef = useRef(null);
+  const [downloadTriggered, setDownloadTriggered] = useState(false);
 
   const {
     transcript,
@@ -152,9 +162,83 @@ const Room = () => {
     setIsCaptionOn(!isCaptionOn);
   }
 
+  // Initialize react-media-recorder
+  const { status, startRecording, stopRecording, mediaBlobUrl, clearBlobUrl } = useReactMediaRecorder({
+    video: true,
+    audio: true,
+    mimeType: "video/webm;codecs=vp8,opus",
+  });
+
+  // Initialize Gemini AI
+  const genAI = new GoogleGenerativeAI(process.env.REACT_APP_GEMINI_API_KEY);
+  const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+
+  // LocalStorage key for messages
+  const storageKey = `chat_${roomID}`;
+
+  // Load messages from localStorage on mount
+  useEffect(() => {
+    const storedMsgs = localStorage.getItem(storageKey);
+    if (storedMsgs) {
+      try {
+        setMsgs(JSON.parse(storedMsgs));
+      } catch (err) {
+        console.error("Error parsing localStorage messages:", err);
+      }
+    }
+  }, [storageKey]);
+
+  // Save messages to localStorage whenever msgs changes
+  useEffect(() => {
+    if (msgs.length > 0) {
+      localStorage.setItem(storageKey, JSON.stringify(msgs));
+    }
+  }, [msgs]);
+
+  // Clear localStorage on meeting end (unmount or End Call)
+  useEffect(() => {
+    return () => {
+      localStorage.removeItem(storageKey);
+      setMsgs([]);
+    };
+  }, [storageKey]);
+
+  // Fetch Gemini suggestions for the latest message
+  useEffect(() => {
+    if (msgs.length === 0) return;
+
+    const latestMsg = msgs[msgs.length - 1].message;
+    const fetchSuggestions = async () => {
+      try {
+        const prompt = `Provide 3 short reply suggestions for the following chat message: "${latestMsg}". Just provide the replies in 3 new lines in plain text. Do not give any extra information.`;
+        const result = await model.generateContent(prompt);
+        const response = await result.response;
+        const text = response.text();
+        const suggestionList = text
+          .split("\n")
+          .filter((line) => line.trim())
+          .slice(0, 3);
+        setSuggestions(suggestionList);
+      } catch (err) {
+        console.error("Error fetching Gemini suggestions:", err);
+        setSuggestions([]);
+      }
+    };
+
+    fetchSuggestions();
+  }, [msgs]);
+
+  // Auto-scroll to bottom of chat
+  useEffect(() => {
+    if (chatScroll.current) {
+      chatScroll.current.scrollTop = chatScroll.current.scrollHeight;
+    }
+  }, [msgs, suggestions]);
+
+  // Handle sending a message
   const sendMessage = (e) => {
     e.preventDefault();
-    if (msgText) {
+    if (msgText.trim()) {
       socket.current.emit("send message", {
         roomID,
         from: socket.current.id,
@@ -165,7 +249,6 @@ const Room = () => {
         },
         message: msgText.trim(),
       });
-
       setMsgs((msgs) => [
         ...msgs,
         {
@@ -178,8 +261,9 @@ const Room = () => {
           message: msgText.trim(),
         },
       ]);
+      setMsgText("");
+      setSuggestions([]);
     }
-    setMsgText("");
   };
 
   useEffect(() => {
@@ -244,32 +328,118 @@ const Room = () => {
     }
   }, [msgs]);
 
-  // Start streaming video to backend
-  const startStreamingToBackend = (stream) => {
-    mediaRecorder.current = new MediaRecorder(stream, {
-      mimeType: "video/webm;codecs=vp8",
-      videoBitsPerSecond: 1000000,
+  // Handle selecting a suggestion
+  const handleSuggestionClick = (suggestion) => {
+    setMsgText(suggestion);
+  };
+
+  // Composite video streams onto canvas and mix audio
+  const setupRecordingStream = () => {
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext("2d");
+    canvas.width = 1280; // Adjust for desired resolution
+    canvas.height = 720;
+
+    // Audio context for mixing
+    audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
+    const dest = audioContextRef.current.createMediaStreamDestination();
+
+    // Add local stream audio
+    if (localStream) {
+      const source = audioContextRef.current.createMediaStreamSource(localStream);
+      source.connect(dest);
+    }
+
+    // Add screen stream audio (if active)
+    if (screenStream) {
+      const screenSource = audioContextRef.current.createMediaStreamSource(screenStream);
+      screenSource.connect(dest);
+    }
+
+    // Add peer streams audio
+    peers.forEach((peer) => {
+      if (peer.peer.stream) {
+        const peerSource = audioContextRef.current.createMediaStreamSource(peer.peer.stream);
+        peerSource.connect(dest);
+      }
     });
 
-    // setIsRecording(true);
+    // Composite video streams
+    const drawStreams = () => {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      let xOffset = 0;
+      const videoWidth = canvas.width / (1 + peers.length + (screenSharing ? 1 : 0));
+      const videoHeight = canvas.height;
 
-    mediaRecorder.current.ondataavailable = async (event) => {
-      if (event.data.size > 0) {
-        const arrayBuffer = await event.data.arrayBuffer();
-        socket.current.emit("video-chunk", {
-          roomID,
-          userId: user.uid,
-          chunk: arrayBuffer,
-        });
+      // Draw local video
+      if (localVideo.current && videoActive) {
+        ctx.drawImage(localVideo.current, xOffset, 0, videoWidth, videoHeight);
+        xOffset += videoWidth;
+      }
+
+      // Draw peer videos
+      peers.forEach((peer) => {
+        const peerVideo = document.getElementById(`peer-video-${peer.peerID}`);
+        if (peerVideo) {
+          ctx.drawImage(peerVideo, xOffset, 0, videoWidth, videoHeight);
+          xOffset += videoWidth;
+        }
+      });
+
+      // Draw screen share
+      if (screenSharing && screenStream) {
+        const screenVideo = document.createElement("video");
+        screenVideo.srcObject = screenStream;
+        screenVideo.play();
+        ctx.drawImage(screenVideo, xOffset, 0, videoWidth, videoHeight);
       }
     };
 
-    mediaRecorder.current.onstop = () => {
-      socket.current.emit("video-stream-end", { roomID, userId: user.uid });
-    };
+    // Update canvas at 30fps
+    const interval = setInterval(drawStreams, 1000 / 30);
 
-    mediaRecorder.current.start(100);
+    // Combine canvas video and mixed audio
+    const canvasStream = canvas.captureStream(30);
+    const audioStream = dest.stream;
+    const combinedStream = new MediaStream([
+      ...canvasStream.getVideoTracks(),
+      ...audioStream.getAudioTracks(),
+    ]);
+
+    return { combinedStream, interval };
   };
+
+  // Start recording
+  const handleStartRecording = () => {
+    const { combinedStream, interval } = setupRecordingStream();
+    setDownloadTriggered(false); // Reset download trigger for new recording
+    startRecording({ stream: combinedStream });
+    canvasRef.current.dataset.interval = interval; // Store interval ID
+  };
+
+  // Stop recording and download
+  const handleStopRecording = () => {
+    stopRecording();
+    const interval = canvasRef.current.dataset.interval;
+    if (interval) clearInterval(interval);
+    if (audioContextRef.current) {
+      audioContextRef.current.close();
+      audioContextRef.current = null;
+    }
+  };
+
+  // Download recorded video
+  useEffect(() => {
+    if (mediaBlobUrl && status === "stopped" && !downloadTriggered) {
+      const link = document.createElement("a");
+      link.href = mediaBlobUrl;
+      const timestamp = new Date().toISOString().replace("T", "_").split(".")[0].replace(/:/g, "-");
+      link.download = `meeting_${timestamp}.webm`;
+      link.click();
+      setDownloadTriggered(true); // Mark download as triggered
+      clearBlobUrl(); // Clear the blob URL to prevent reuse
+    }
+  }, [mediaBlobUrl, status, downloadTriggered, clearBlobUrl]);
 
 
   useEffect(() => {
@@ -346,8 +516,7 @@ const Room = () => {
   }, [transcript, roomID, user.uid]);
   useEffect(() => {
     const unsub = () => {
-      socket.current = io.connect("http://localhost:5555/");
-
+      socket.current = io.connect("http://localhost:5555");
       // Receive processed sign language text from backend
       socket.current.on("sign-language-text", (data) => {
         setSignLanguageText(data.text);
@@ -574,6 +743,9 @@ const Room = () => {
         localStream.getTracks().forEach((track) => track.stop());
       }
       socket.current.disconnect();
+      if (audioContextRef.current) {
+        audioContextRef.current.close();
+      }
     };
   }, [user, roomID]);
 
@@ -583,6 +755,31 @@ const Room = () => {
       chatScroll.current.scrollTop = chatScroll.current.scrollHeight;
     }
   }, [msgs]);
+
+  // Start streaming video to backend
+  const startStreamingToBackend = (stream) => {
+    mediaRecorder.current = new MediaRecorder(stream, {
+      mimeType: "video/webm;codecs=vp8",
+      videoBitsPerSecond: 1000000,
+    });
+
+    mediaRecorder.current.ondataavailable = async (event) => {
+      if (event.data.size > 0) {
+        const arrayBuffer = await event.data.arrayBuffer();
+        socket.current.emit("video-chunk", {
+          roomID,
+          userId: user.uid,
+          chunk: arrayBuffer,
+        });
+      }
+    };
+
+    mediaRecorder.current.onstop = () => {
+      socket.current.emit("video-stream-end", { roomID, userId: user.uid });
+    };
+
+    mediaRecorder.current.start(100);
+  };
 
   if (!browserSupportsSpeechRecognition) {
     return <span>Browser doesn't support speech recognition.</span>;
@@ -648,7 +845,7 @@ const Room = () => {
                   >
                     <motion.div
                       layout
-                      className={`grid grid-cols-1 gap-4  ${showChat ? "md:grid-cols-2" : "lg:grid-cols-3 sm:grid-cols-2"} `}
+                      className={`grid grid-cols-1 gap-4 ${showChat ? "md:grid-cols-2" : "lg:grid-cols-3 sm:grid-cols-2"}`}
                     >
                       <motion.div
                         layout
@@ -691,8 +888,17 @@ const Room = () => {
                         </div>
                       </motion.div>
                       {peers.map((peer) => (
-                        <MeetGridCard key={peer?.peerID} user={peer.user} peer={peer?.peer} />
+                        <MeetGridCard key={peer?.peerID} user={peer.user} micActive={peer.micActive} peer={peer.peer} />
                       ))}
+
+                      {screenSharing && screenStream && (
+                        <MeetGridCard
+                          key="screen-share"
+                          user={{ name: "You (Sharing Screen)", photoURL: user?.photoURL }}
+                          stream={screenStream}
+                          pinnedByDefault
+                        />
+                      )}
                     </motion.div>
                   </div>
                   <div>
@@ -767,6 +973,55 @@ const Room = () => {
                             </button>
                         </div>
                         <div>
+                        </div>
+                        <div>
+                          <button
+                            className={`${screenSharing ? "bg-blue border-transparent" : "bg-slate-800/70 backdrop-blur border-gray"} border-2 p-2 cursor-pointer rounded-xl text-white text-xl`}
+                            onClick={async () => {
+                              if (!screenSharing) {
+                                try {
+                                  const stream = await navigator.mediaDevices.getDisplayMedia({
+                                    video: { cursor: "always" },
+                                    audio: false,
+                                  });
+
+                                  setScreenStream(stream);
+                                  setScreenSharing(true);
+
+                                  stream.getVideoTracks()[0].onended = () => {
+                                    setScreenStream(null);
+                                    setScreenSharing(false);
+                                  };
+                                } catch (err) {
+                                  console.error("Screen sharing error:", err);
+                                }
+                              } else {
+                                screenStream?.getTracks().forEach((track) => track.stop());
+                                setScreenStream(null);
+                                setScreenSharing(false);
+                              }
+                            }}
+                          >
+                            {screenSharing ? <ScreenShareIcon /> : <ScreenShareIcon />}
+                          </button>
+                        </div>
+                        <div>
+                          <button
+                            className={`${status === "recording" ? "bg-blue border-transparent" : "bg-slate-800/70 backdrop-blur border-gray"} border-2 p-2 cursor-pointer rounded-xl text-white text-xl`}
+                            onClick={handleStartRecording}
+                            disabled={status === "recording"}
+                          >
+                            <RecordIcon />
+                          </button>
+                        </div>
+                        <div>
+                          <button
+                            className={`${status === "recording" ? "bg-blue border-transparent" : "bg-slate-800/70 backdrop-blur border-gray"} border-2 p-2 cursor-pointer rounded-xl text-white text-xl`}
+                            onClick={handleStopRecording}
+                            disabled={status !== "recording"}
+                          >
+                            <StopIcon />
+                          </button>
                         </div>
                       </div>
                       <div className="flex-grow flex justify-center">
@@ -952,11 +1207,12 @@ const Room = () => {
                         <motion.div
                           layout
                           ref={chatScroll}
-                          className="p-3 h-full overflow-y-scroll flex flex-col gap-4"
+                          className="p-3 h-full overflow-y-scroll flex flex-col gap-4 scrollbar-thin scrollbar-thumb-blue-600 scrollbar-track-darkBlue1"
                         >
                           {msgs.map((msg, index) => (
                             <motion.div
                               layout
+                              key={index}
                               initial={{ x: msg.send ? 100 : -100, opacity: 0 }}
                               animate={{ x: 0, opacity: 1 }}
                               transition={{ duration: 0.08 }}
@@ -970,9 +1226,10 @@ const Room = () => {
                                 className="h-8 w-8 aspect-square rounded-full object-cover"
                               />
                               <div className="relative flex-grow">
+                                <div className="flex flex-col gap-2">
                                 <p className="bg-darkBlue1 py-2 px-3 text-xs w-auto max-w-[87%] rounded-lg border-2 border-lightGray">
-                                  {msg?.message}
-                                </p>
+                                    {msg?.message}
+                                  </p>
                                 <button
                                   onClick={() => playMorse(textToMorse(msg?.message))}
                                   className="absolute top-1/2 right-2 -translate-y-1/2 bg-slate-800/70 backdrop-blur border-gray border-[1px] rounded-full p-1 text-white text-xs cursor-pointer"
@@ -981,12 +1238,27 @@ const Room = () => {
                                   <MorseIcon size={14} />
                                 </button>
                               </div>
+                                {index === msgs.length - 1 && suggestions.length > 0 && msg.user.id !== user.uid && (
+                                  <div className="flex flex-wrap gap-2">
+                                    {suggestions.map((suggestion, suggestionIndex) => (
+                                      <button
+                                        key={suggestionIndex}
+                                        type="button"
+                                        onClick={() => handleSuggestionClick(suggestion)}
+                                        className="bg-blue text-white px-3 py-1 rounded-lg text-xs hover:bg-blue-600"
+                                      >
+                                        {suggestion}
+                                      </button>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
                             </motion.div>
                           ))}
                         </motion.div>
                       </div>
                     </div>
-                    <div className="w-full h-16 bg-darkBlue1 border-t-2 border-lightGray p-3">
+                    <div className="w-full bg-darkBlue1 border-t-2 border-lightGray p-3">
                       <form onSubmit={sendMessage}>
                         <div className="flex items-center gap-2">
                           <div className="relative flex-grow">
@@ -995,7 +1267,7 @@ const Room = () => {
                               value={msgText}
                               onChange={(e) => setMsgText(e.target.value)}
                               className="h-10 p-3 w-full text-sm text-darkBlue1 outline-none rounded-lg"
-                              placeholder="Enter message.. "
+                              placeholder="Enter message.."
                             />
                             {msgText && (
                               <button
@@ -1017,6 +1289,7 @@ const Room = () => {
                     </div>
                   </motion.div>
                 )}
+                <canvas ref={canvasRefScreen} style={{ display: "none" }} />
               </motion.div>
             )
           )}

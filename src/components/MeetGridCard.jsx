@@ -9,23 +9,35 @@ import { BsPin as PinIcon } from "react-icons/bs";
 import { BsPinFill as PinActiveIcon } from "react-icons/bs";
 import { useRef } from "react";
 
-const MeetGridCard = ({ user, micActive, peer }) => {
-  const [pin, setPin] = useState(false);
+const MeetGridCard = ({ user, micActive, peer, stream, pinnedByDefault = false }) => {
+  const [pin, setPin] = useState(pinnedByDefault);
   const videoRef = useRef();
   const [videoActive, setVideoActive] = useState(true);
+
   useEffect(() => {
-    peer.on("stream", (stream) => {
-      setVideoActive(stream.getTracks().find((track) => track.kind === "video").enabled);
+    if (stream) {
+      // For direct stream (e.g., screen share)
+      const videoTrack = stream.getVideoTracks()[0];
+      setVideoActive(videoTrack?.enabled ?? true);
       videoRef.current.srcObject = stream;
-    });
-  }, []);
+    } else if (peer) {
+      // For peer-based stream
+      peer.on("stream", (incomingStream) => {
+        const videoTrack = incomingStream.getVideoTracks()[0];
+        setVideoActive(videoTrack?.enabled ?? true);
+        videoRef.current.srcObject = incomingStream;
+      });
+    }
+  }, [stream, peer]);
+
   return (
     <motion.div
       layout
       className={`relative bg-lightGray rounded-lg shrink-0 aspect-video overflow-hidden ${
-        pin && "md:col-span-2 md:row-span-2 md:col-start-1 md:row-start-1"
+        pin ? "md:col-span-2 md:row-span-2 md:col-start-1 md:row-start-1" : ""
       }`}
     >
+      {/* Pin button */}
       <div className="absolute top-4 right-4 z-30">
         <button
           className={`${
@@ -42,12 +54,17 @@ const MeetGridCard = ({ user, micActive, peer }) => {
           {pin ? <PinActiveIcon /> : <PinIcon />}
         </button>
       </div>
+
+      {/* Video */}
       <video
         ref={videoRef}
         autoPlay
+        muted={user?.name === "You (Sharing Screen)"}
         controls={false}
         className="h-full w-full object-cover rounded-lg"
       />
+
+      {/* Video placeholder if off */}
       {!videoActive && (
         <div className="absolute top-0 left-0 bg-lightGray h-full w-full flex items-center justify-center">
           <img
@@ -60,23 +77,10 @@ const MeetGridCard = ({ user, micActive, peer }) => {
           />
         </div>
       )}
-      {/* <div className="absolute bottom-4 right-4">
-        <button
-          className={`${
-            micActive
-              ? "bg-blue border-transparent"
-              : "bg-slate-800/70 backdrop-blur border-gray"
-          } md:border-2 border-[1px] aspect-square opacity-80 md:p-2.5 p-1.5 cursor-default md:rounded-xl rounded-lg text-white md:text-xl text-lg`}
-          // onClick={() => {
-          //   setMicOn(!micActive);
-          //   joinSound.play();
-          // }}
-        >
-          {micActive ? <MicOnIcon /> : <MicOffIcon />}
-        </button>
-      </div> */}
+
+      {/* Name badge */}
       <div className="absolute bottom-4 left-4">
-        <div className="bg-slate-800/70 backdrop-blur border-gray border-2  py-1 px-3 cursor-pointer rounded-md text-white text-xs">
+        <div className="bg-slate-800/70 backdrop-blur border-gray border-2 py-1 px-3 cursor-pointer rounded-md text-white text-xs">
           {user?.name || "Anonymous"}
         </div>
       </div>
