@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useRef } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { GoogleGenerativeAI } from "@google/generative-ai";
+import { useReactMediaRecorder } from "react-media-recorder";
 
 // Icons
 import { IoChatboxOutline as ChatIcon } from "react-icons/io5";
@@ -20,6 +21,8 @@ import { IoMicOff as MicOffIcon } from "react-icons/io5";
 import { BsPin as PinIcon } from "react-icons/bs";
 import { BsPinFill as PinActiveIcon } from "react-icons/bs";
 import { MdScreenShare as ScreenShareIcon } from "react-icons/md";
+import { BsRecordCircle as RecordIcon } from "react-icons/bs";
+import { BsStopCircle as StopIcon } from "react-icons/bs";
 import { QRCode } from "react-qrcode-logo";
 import MeetGridCard from "../components/MeetGridCard";
 
@@ -71,6 +74,9 @@ const Room = () => {
   const processedVideo = useRef();
   const [screenStream, setScreenStream] = useState(null);
   const [screenSharing, setScreenSharing] = useState(false);
+  const canvasRef = useRef(null);
+  const audioContextRef = useRef(null);
+  const [downloadTriggered, setDownloadTriggered] = useState(false);
 
   const {
     transcript,
@@ -78,6 +84,13 @@ const Room = () => {
     resetTranscript,
     browserSupportsSpeechRecognition,
   } = useSpeechRecognition();
+
+  // Initialize react-media-recorder
+  const { status, startRecording, stopRecording, mediaBlobUrl, clearBlobUrl } = useReactMediaRecorder({
+    video: true,
+    audio: true,
+    mimeType: "video/webm;codecs=vp8,opus",
+  });
 
   // Initialize Gemini AI
   const genAI = new GoogleGenerativeAI(process.env.REACT_APP_GEMINI_API_KEY);
@@ -180,6 +193,114 @@ const Room = () => {
   const handleSuggestionClick = (suggestion) => {
     setMsgText(suggestion);
   };
+
+  // Composite video streams onto canvas and mix audio
+  const setupRecordingStream = () => {
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext("2d");
+    canvas.width = 1280; // Adjust for desired resolution
+    canvas.height = 720;
+
+    // Audio context for mixing
+    audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
+    const dest = audioContextRef.current.createMediaStreamDestination();
+
+    // Add local stream audio
+    if (localStream) {
+      const source = audioContextRef.current.createMediaStreamSource(localStream);
+      source.connect(dest);
+    }
+
+    // Add screen stream audio (if active)
+    if (screenStream) {
+      const screenSource = audioContextRef.current.createMediaStreamSource(screenStream);
+      screenSource.connect(dest);
+    }
+
+    // Add peer streams audio
+    peers.forEach((peer) => {
+      if (peer.peer.stream) {
+        const peerSource = audioContextRef.current.createMediaStreamSource(peer.peer.stream);
+        peerSource.connect(dest);
+      }
+    });
+
+    // Composite video streams
+    const drawStreams = () => {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      let xOffset = 0;
+      const videoWidth = canvas.width / (1 + peers.length + (screenSharing ? 1 : 0));
+      const videoHeight = canvas.height;
+
+      // Draw local video
+      if (localVideo.current && videoActive) {
+        ctx.drawImage(localVideo.current, xOffset, 0, videoWidth, videoHeight);
+        xOffset += videoWidth;
+      }
+
+      // Draw peer videos
+      peers.forEach((peer) => {
+        const peerVideo = document.getElementById(`peer-video-${peer.peerID}`);
+        if (peerVideo) {
+          ctx.drawImage(peerVideo, xOffset, 0, videoWidth, videoHeight);
+          xOffset += videoWidth;
+        }
+      });
+
+      // Draw screen share
+      if (screenSharing && screenStream) {
+        const screenVideo = document.createElement("video");
+        screenVideo.srcObject = screenStream;
+        screenVideo.play();
+        ctx.drawImage(screenVideo, xOffset, 0, videoWidth, videoHeight);
+      }
+    };
+
+    // Update canvas at 30fps
+    const interval = setInterval(drawStreams, 1000 / 30);
+
+    // Combine canvas video and mixed audio
+    const canvasStream = canvas.captureStream(30);
+    const audioStream = dest.stream;
+    const combinedStream = new MediaStream([
+      ...canvasStream.getVideoTracks(),
+      ...audioStream.getAudioTracks(),
+    ]);
+
+    return { combinedStream, interval };
+  };
+
+  // Start recording
+  const handleStartRecording = () => {
+    const { combinedStream, interval } = setupRecordingStream();
+    setDownloadTriggered(false); // Reset download trigger for new recording
+    startRecording({ stream: combinedStream });
+    canvasRef.current.dataset.interval = interval; // Store interval ID
+  };
+
+  // Stop recording and download
+  const handleStopRecording = () => {
+    stopRecording();
+    const interval = canvasRef.current.dataset.interval;
+    if (interval) clearInterval(interval);
+    if (audioContextRef.current) {
+      audioContextRef.current.close();
+      audioContextRef.current = null;
+    }
+  };
+
+  // Download recorded video
+  useEffect(() => {
+    if (mediaBlobUrl && status === "stopped" && !downloadTriggered) {
+      const link = document.createElement("a");
+      link.href = mediaBlobUrl;
+      const timestamp = new Date().toISOString().replace("T", "_").split(".")[0].replace(/:/g, "-");
+      link.download = `meeting_${timestamp}.webm`;
+      link.click();
+      setDownloadTriggered(true); // Mark download as triggered
+      clearBlobUrl(); // Clear the blob URL to prevent reuse
+    }
+  }, [mediaBlobUrl, status, downloadTriggered, clearBlobUrl]);
 
   // Socket.IO and WebRTC setup
   useEffect(() => {
@@ -290,6 +411,9 @@ const Room = () => {
         localStream.getTracks().forEach((track) => track.stop());
       }
       socket.current.disconnect();
+      if (audioContextRef.current) {
+        audioContextRef.current.close();
+      }
     };
   }, [user, roomID]);
 
@@ -502,6 +626,24 @@ const Room = () => {
                             {screenSharing ? <ScreenShareIcon /> : <ScreenShareIcon />}
                           </button>
                         </div>
+                        <div>
+                          <button
+                            className={`${status === "recording" ? "bg-blue border-transparent" : "bg-slate-800/70 backdrop-blur border-gray"} border-2 p-2 cursor-pointer rounded-xl text-white text-xl`}
+                            onClick={handleStartRecording}
+                            disabled={status === "recording"}
+                          >
+                            <RecordIcon />
+                          </button>
+                        </div>
+                        <div>
+                          <button
+                            className={`${status === "recording" ? "bg-blue border-transparent" : "bg-slate-800/70 backdrop-blur border-gray"} border-2 p-2 cursor-pointer rounded-xl text-white text-xl`}
+                            onClick={handleStopRecording}
+                            disabled={status !== "recording"}
+                          >
+                            <StopIcon />
+                          </button>
+                        </div>
                       </div>
                       <div className="flex-grow flex justify-center">
                         <button
@@ -702,6 +844,7 @@ const Room = () => {
                     </div>
                   </motion.div>
                 )}
+                <canvas ref={canvasRef} style={{ display: "none" }} />
               </motion.div>
             )
           )}
