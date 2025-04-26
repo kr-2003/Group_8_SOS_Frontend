@@ -18,6 +18,7 @@ import { IoMic as MicOnIcon } from "react-icons/io5";
 import { IoMicOff as MicOffIcon } from "react-icons/io5";
 import { BsPin as PinIcon } from "react-icons/bs";
 import { BsPinFill as PinActiveIcon } from "react-icons/bs";
+import { BsSoundwave as MorseIcon } from "react-icons/bs";
 
 import { QRCode } from "react-qrcode-logo";
 import MeetGridCard from "../components/MeetGridCard";
@@ -73,7 +74,72 @@ const Room = () => {
   const [isRecording, setIsRecording] = useState(true);
   const [roomTranscripts, setRoomTranscripts] = useState([]);
   const recognitionRef = useRef(null);
+  const [isCaptionOn, setIsCaptionOn] = useState(false);
 
+  const latestMessageRef = useRef(null);
+  const allMessagesRef = useRef([]);
+  const [prediction, setPrediction] = useState("");
+  const canvasRef = useRef();
+  const [signLangText, setSignLangText] = useState("");
+  const [prevChar, setPrevChar] = useState("");
+
+  const morseCodeMap = {
+    'A': '.-', 'B': '-...', 'C': '-.-.', 'D': '-..', 'E': '.', 'F': '..-.',
+    'G': '--.', 'H': '....', 'I': '..', 'J': '.---', 'K': '-.-', 'L': '.-..',
+    'M': '--', 'N': '-.', 'O': '---', 'P': '.--.', 'Q': '--.-', 'R': '.-.',
+    'S': '...', 'T': '-', 'U': '..-', 'V': '...-', 'W': '.--', 'X': '-..-',
+    'Y': '-.--', 'Z': '--..', '0': '-----', '1': '.----', '2': '..---',
+    '3': '...--', '4': '....-', '5': '.....', '6': '-....', '7': '--...',
+    '8': '---..', '9': '----.', '.': '.-.-.-', ',': '--..--', '?': '..--..',
+    "'": '.----.', '!': '-.-.--', '/': '-..-.-', '(': '-.--.', ')': '-.--.-',
+    '&': '.-...', ':': '---...', ';': '-.-.-.', '=': '-...-', '+': '.-.-.',
+    '-': '-....-', '_': '..--.-', '"': '.-..-.', '$': '...-..-', '@': '.--.-.',
+    ' ': ' ',
+  };
+
+  const textToMorse = (text) => {
+    return text.toUpperCase().split('').map(char => morseCodeMap[char] || '').join(' ');
+  };
+
+  const playMorse = async (morseCode, dotDuration = 100) => {
+    const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    const oscillator = audioContext.createOscillator();
+    const gainNode = audioContext.createGain();
+
+    oscillator.type = 'sine';
+    oscillator.frequency.value = 600;
+    gainNode.gain.value = 0.5;
+    gainNode.gain.setValueAtTime(0, audioContext.currentTime);
+
+    oscillator.connect(gainNode);
+    gainNode.connect(audioContext.destination);
+    oscillator.start();
+
+    const symbols = morseCode.split(' ');
+    let currentTime = audioContext.currentTime;
+
+    for (const symbol of symbols) {
+      for (const unit of symbol) {
+        if (unit === '.') {
+          gainNode.gain.setValueAtTime(0.5, currentTime);
+          currentTime += dotDuration / 1000;
+          gainNode.gain.setValueAtTime(0, currentTime);
+          currentTime += dotDuration / 1000;
+        } else if (unit === '-') {
+          gainNode.gain.setValueAtTime(0.5, currentTime);
+          currentTime += (dotDuration * 3) / 1000;
+          gainNode.gain.setValueAtTime(0, currentTime);
+          currentTime += dotDuration / 1000;
+        }
+      }
+      currentTime += (dotDuration * 3) / 1000;
+    }
+
+    setTimeout(() => {
+      oscillator.stop();
+      audioContext.close();
+    }, currentTime * 1000 + 100);
+  };
 
   const {
     transcript,
@@ -81,6 +147,10 @@ const Room = () => {
     resetTranscript,
     browserSupportsSpeechRecognition,
   } = useSpeechRecognition();
+
+  const captionButtonClick = () => {
+    setIsCaptionOn(!isCaptionOn);
+  }
 
   const sendMessage = (e) => {
     e.preventDefault();
@@ -95,9 +165,84 @@ const Room = () => {
         },
         message: msgText.trim(),
       });
+
+      setMsgs((msgs) => [
+        ...msgs,
+        {
+          send: true,
+          user: {
+            id: user.uid,
+            name: user?.displayName,
+            profilePic: user.photoURL,
+          },
+          message: msgText.trim(),
+        },
+      ]);
     }
     setMsgText("");
   };
+
+  useEffect(() => {
+    const handleKeyDown = (event) => {
+      if (event.code === 'KeyL' && event.metaKey) {
+        if (latestMessageRef.current) {
+          playMorseWithSender("Latest Message", latestMessageRef.current.user?.name, latestMessageRef.current.message);
+        }
+      } else if (event.code === 'KeyE' && event.metaKey) { // Using metaKey (Cmd on Mac, Win on PC) as a modifier, adjust as needed
+        if (allMessagesRef.current.length > 0) {
+          playMorseForAllMessages(allMessagesRef.current);
+        }
+      }
+    };
+
+    const handleKeyUp = (event) => {
+      if (event.code === 'Space') {
+        clearTimeout(spacebarTimer.current);
+      } else if (event.code === 'KeyA' && event.metaKey) {
+        clearTimeout(spacebarATimer.current);
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    document.addEventListener('keyup', handleKeyUp);
+
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+      document.removeEventListener('keyup', handleKeyUp);
+      clearTimeout(spacebarTimer.current);
+      clearTimeout(spacebarATimer.current);
+    };
+  }, [msgs, user]);
+
+  const spacebarTimer = useRef(null);
+  const spacebarATimer = useRef(null);
+
+  const playMorseWithSender = (context, sender, text) => {
+    const senderMorse = textToMorse(`Sender: ${sender}`);
+    const messageMorse = textToMorse(`Message: ${text}`);
+    console.log(`Sender: ${sender} Message: ${text}`);
+    playMorse(`${textToMorse(context)} .-. .-. .-.-. ${senderMorse} .-.-. ${messageMorse}`); // Using '.-.-.' as a separator
+  };
+
+  const playMorseForAllMessages = (messages) => {
+    let fullMorse = textToMorse("All Messages");
+    messages.forEach((msg, index) => {
+      const senderMorse = textToMorse(`Sender: ${msg.user?.name}`);
+      const messageMorse = textToMorse(`Message: ${msg.message}`);
+      fullMorse += ` .-.-. ${senderMorse} .-.-. ${messageMorse}`; // Using '.-.-.' as a separator
+      if (index < messages.length - 1) {
+        fullMorse += ` ...-.-... `; // Adding a longer pause between messages
+      }
+    });
+    playMorse(fullMorse);
+  };
+
+  useEffect(() => {
+    if (msgs.length > 0) {
+      latestMessageRef.current = msgs[msgs.length - 1];
+      allMessagesRef.current = [...msgs];
+    }
+  }, [msgs]);
 
   // Start streaming video to backend
   const startStreamingToBackend = (stream) => {
@@ -201,7 +346,7 @@ const Room = () => {
   }, [transcript, roomID, user.uid]);
   useEffect(() => {
     const unsub = () => {
-      socket.current = io.connect("https://group8-sos-backend.onrender.com/");
+      socket.current = io.connect("http://localhost:5555/");
 
       // Receive processed sign language text from backend
       socket.current.on("sign-language-text", (data) => {
@@ -216,11 +361,36 @@ const Room = () => {
         }));
       });
 
+      // socket.current.on("room-transcripts", (data) => {
+      //   console.log("Received room transcripts:", data.transcripts);
+      //   setRoomTranscripts(data.transcripts);
+      // });
+
       socket.current.on("room-transcripts", (data) => {
         console.log("Received room transcripts:", data.transcripts);
-        setRoomTranscripts(data.transcripts);
+        setRoomTranscripts((prev) => {
+          const transcriptMap = new Map();
+
+          // Add existing transcripts to the map
+          prev.forEach((transcript) => {
+            transcriptMap.set(transcript.username, transcript);
+          });
+
+          // Update or add new transcripts
+          data.transcripts.forEach((transcript) => {
+            transcriptMap.set(transcript.username, {
+              ...transcript,
+              timestamp: transcript.timestamp || Date.now(),
+            });
+          });
+
+          // Convert map back to array and sort by timestamp
+          return Array.from(transcriptMap.values()).sort(
+            (a, b) => a.timestamp - b.timestamp
+          );
+        });
       });
-    
+
       socket.current.on("message", (data) => {
         const audio = new Audio(msgSFX);
         if (user?.uid !== data.user.id) {
@@ -246,6 +416,56 @@ const Room = () => {
 
             // Start streaming to backend
             startStreamingToBackend(stream);
+
+
+
+            const captureAndSendFrame = async () => {
+              if (localVideo.current && localVideo.current.videoWidth > 0 && localVideo.current.videoHeight > 0) {
+                const canvas = canvasRef.current;
+                canvas.width = localVideo.current.videoWidth;
+                canvas.height = localVideo.current.videoHeight;
+                const ctx = canvas.getContext("2d");
+                ctx.drawImage(
+                  localVideo.current,
+                  0,
+                  0,
+                  canvas.width,
+                  canvas.height
+                );
+
+                canvas.toBlob(async (blob) => {
+                  if (blob) {
+                    const formData = new FormData();
+                    formData.append("image", blob, "frame.png"); // 'image' must match your FastAPI endpoint's parameter name
+
+                    try {
+                      const response = await fetch("http://localhost:8000/predict", {
+                        method: "POST",
+                        body: formData,
+                      });
+
+                      if (response.ok) {
+                        const data = await response.json();
+                        setPrediction(data.message); // Or handle the prediction data as needed
+                        console.log(data);
+                        setSignLangText(data.result);
+                        setPrevChar(data.current_letter);
+                      } else {
+                        console.error(
+                          "Error sending frame:",
+                          response.status,
+                          response.statusText
+                        );
+                      }
+                    } catch (error) {
+                      console.error("Error sending frame:", error);
+                    }
+                  }
+                }, "image/png");
+              }
+            };
+
+            const frameInterval = setInterval(captureAndSendFrame, 1000)
 
             socket.current.emit("join room", {
               roomID,
@@ -306,14 +526,21 @@ const Room = () => {
               peersRef.current = peers;
               setPeers((users) => users.filter((p) => p.peerID !== id));
             });
+
+            return () => {
+              clearInterval(frameInterval);
+            };
           });
       }
 
     };
     unsub();
 
+
+
     // Cleanup on unmount
     return () => {
+
       if (mediaRecorder.current && mediaRecorder.current.state !== "inactive") {
         mediaRecorder.current.stop();
       }
@@ -349,11 +576,11 @@ const Room = () => {
         signal,
         user: user
           ? {
-              uid: user?.uid,
-              email: user?.email,
-              name: user?.displayName,
-              photoURL: user?.photoURL,
-            }
+            uid: user?.uid,
+            email: user?.email,
+            name: user?.displayName,
+            photoURL: user?.photoURL,
+          }
           : null,
       });
     });
@@ -417,6 +644,10 @@ const Room = () => {
                           controls={false}
                           className="h-full w-full object-cover rounded-lg"
                         />
+                        <canvas
+                          ref={canvasRef}
+                          style={{ display: "none" }} //  Hide the canvas
+                        ></canvas>
                         {!videoActive && (
                           <div className="absolute top-0 left-0 bg-lightGray h-full w-full flex items-center justify-center">
                             <img
@@ -438,6 +669,32 @@ const Room = () => {
                       ))}
                     </motion.div>
                   </div>
+                  <div>
+                    <div className="flex items-center justify-between bg-darkBlue1 p-3">
+                      <div className="text-xl text-slate-400">
+                        {signLangText}
+                      </div>
+                      <div className="ml-2 text-sm font">Sign Language</div>
+                      <div className="ml-auto text-lg">
+                        {prevChar}
+                      </div>
+                    </div>
+                  </div>
+                  {isCaptionOn && <div className="mt-4">
+                    {/* <p className="text-sm font-medium">Room Transcripts:</p> */}
+                    <div className="mt-2 flex flex-col gap-2">
+                      {roomTranscripts.map((transcript, index) => (
+                        <div
+                          key={transcript.username} // Use username as key for uniqueness
+                          className="bg-darkBlue1 py-2 px-3 text-xs rounded-lg border-2"
+                          style={{ border: "1px solid #ececec" }}
+                        >
+                          <span className="ml-2 text-sm font">{transcript.username || "Unknown"} : </span>
+                          <span className="ml-1 text-sm font">{transcript.text}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>}
                   <div className="w-full h-16 bg-darkBlue1 border-t-2 border-lightGray p-3">
                     <div className="flex items-center justify-between">
                       <div className="flex gap-2">
@@ -476,7 +733,15 @@ const Room = () => {
                           </button>
                         </div>
                         <div>
-                          </div>
+                          <button onClick={captionButtonClick}
+                            className={`${isCaptionOn ? "bg-blue border-transparent" : "bg-slate-800/70 backdrop-blur border-gray"} border-2 p-2 cursor-pointer rounded-xl text-white`}
+                            style={{ fontSize: "14px" }}
+                          >
+                            Caption
+                          </button>
+                        </div>
+                        <div>
+                        </div>
                       </div>
                       <div className="flex-grow flex justify-center">
                         <button
@@ -511,13 +776,27 @@ const Room = () => {
                     </div>
                   </div>
                 </motion.div>
-                <div className="p-3">
+                {/* <div className="p-3">
                   <p>Microphone: {listening ? "on" : "off"}</p>
                   <button onClick={SpeechRecognition.startListening}>Start</button>
                   <button onClick={SpeechRecognition.stopListening}>Stop</button>
                   <button onClick={resetTranscript}>Reset</button>
                   <p>Speech Transcript: {transcript}</p>
                   <p>Sign Language Text: {signLanguageText}</p>
+                    <div className="mt-4">
+                      <p className="text-sm font-medium">Room Transcripts:</p>
+                      <div className="mt-2 flex flex-col gap-2">
+                        {roomTranscripts.map((transcript, index) => (
+                          <div
+                            key={transcript.username} // Use username as key for uniqueness
+                            className="bg-darkBlue1 py-2 px-3 text-xs rounded-lg border-2 border-lightGray"
+                          >
+                            <span className="font-medium">{transcript.username || "Unknown"}: </span>
+                            {transcript.text}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
                   <div className="mt-4">
                     <p className="text-sm font-medium">Video Transcriptions:</p>
                     <div className="mt-2 flex flex-col gap-2">
@@ -537,7 +816,7 @@ const Room = () => {
                       })}
                     </div>
                   </div>
-                </div>
+                </div> */}
                 {showChat && (
                   <motion.div
                     layout
@@ -641,7 +920,8 @@ const Room = () => {
                               initial={{ x: msg.send ? 100 : -100, opacity: 0 }}
                               animate={{ x: 0, opacity: 1 }}
                               transition={{ duration: 0.08 }}
-                              className={`flex gap-2 ${msg?.user.id === user?.uid ? "flex-row-reverse" : ""}`}
+                              className={`flex items-center gap-2 ${msg?.user.id === user?.uid ? "flex-row-reverse" : ""
+                                }`}
                               key={index}
                             >
                               <img
@@ -649,9 +929,18 @@ const Room = () => {
                                 alt={msg?.user.name}
                                 className="h-8 w-8 aspect-square rounded-full object-cover"
                               />
-                              <p className="bg-darkBlue1 py-2 px-3 text-xs w-auto max-w-[87%] rounded-lg border-2 border-lightGray">
-                                {msg?.message}
-                              </p>
+                              <div className="relative flex-grow">
+                                <p className="bg-darkBlue1 py-2 px-3 text-xs w-auto max-w-[87%] rounded-lg border-2 border-lightGray">
+                                  {msg?.message}
+                                </p>
+                                <button
+                                  onClick={() => playMorse(textToMorse(msg?.message))}
+                                  className="absolute top-1/2 right-2 -translate-y-1/2 bg-slate-800/70 backdrop-blur border-gray border-[1px] rounded-full p-1 text-white text-xs cursor-pointer"
+                                  aria-label={`Play Morse code for message: ${msg?.message}`}
+                                >
+                                  <MorseIcon size={14} />
+                                </button>
+                              </div>
                             </motion.div>
                           ))}
                         </motion.div>
