@@ -1,2 +1,2 @@
 # EquaSpace-Frontend
-Frontend Side
+Frontend Project
